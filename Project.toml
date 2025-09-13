@@ -3,6 +3,11 @@ uuid = "69244843-d0fa-4a00-9bc2-bde15b166b8b"
 authors = ["Nick Owens <owensnick@gmail.com> and contributors"]
 version = "1.0.0-DEV"
 
+[deps]
+OnlineStats = "a15396b6-48d5-5d58-9928-6d29437db91e"
+SMGReader = "1fcad8e2-2524-48d4-84b4-e3c1a79e288e"
+UnicodePlots = "b8865327-cd53-5732-bb35-84acbb429228"
+
 [compat]
 julia = "1.6.7"
 
