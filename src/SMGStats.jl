@@ -1,12 +1,19 @@
 module SMGStats
 
 using SMGReader
+using Statistics
+using StatsBase
 using OnlineStats
-using UnicodePlots
+using ProgressMeter
+# using UnicodePlots
+using DataFrames, CSV
 
-export firestats
+using CairoMakie, AlgebraOfGraphics, ColorSchemes
 
-include("unicode_tools.jl")
+export firestats, unicodeplot, displayplots, writeallstats, readstats, plotstat, htmlreport, statname, samplesummary
+
+# include("unicode_tools.jl")
+include("utils.jl")
 include("stats.jl")
-
+include("report.jl")
 end
