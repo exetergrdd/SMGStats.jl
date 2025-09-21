@@ -14,6 +14,6 @@ export firestats, unicodeplot, displayplots, writeallstats, readstats, plotstat,
 
 # include("unicode_tools.jl")
 include("utils.jl")
-include("stats.jl")
+include("stats/stats.jl")
 include("report.jl")
 end
