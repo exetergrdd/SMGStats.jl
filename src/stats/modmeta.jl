@@ -1,31 +1,40 @@
 
 
 ############################# mod meta read size #############################
+
 struct ModMetaHist <: RecordStat
     n::Int
     thresh::Float64
-    data::Dict{Modification, Vector{Int}}
+    data::Matrix{Int}
 end
-ModMetaHist(n=1000) = ModMetaHist(n, 0.9*255, Dict{Modification, Vector{Int}}())
+ModMetaHist(mods; n=1000, thresh=0.9*255) = ModMetaHist(n, thresh, zeros(n, length(instances(Modification))))
+instantiate(::Type{ModMetaHist}, reader, mods) = ModMetaHist(mods)
+
+
+recordupdates(::Type{ModMetaHist})  = nothing
+modupdates(::Type{ModMetaHist})     = ModUpdates
+postmodupdates(::Type{ModMetaHist}) = nothing
+
 
 statname(::Type{ModMetaHist}) = "Modification Distribution along read"
-
-function update!(stat::ModMetaHist, reader::HTSFileReader, record::BamRecord, recorddata)
-    for mi in ModIterator(record, recorddata)
-        (mi.prob > stat.thresh)   || continue
-        haskey(stat.data, mi.mod) || (stat.data[mi.mod] = zeros(Int, stat.n))
-
-        i = Int(floor(stat.n*mi.pos/querylength(record)))
+@inline function updatemod!(stat::ModMetaHist, mod::ModificationInfo, record::BamRecord, recorddata)
+    if mod.prob > stat.thresh
+        i = Int(floor(stat.n*mod.pos/querylength(record)))
         i = max(i, 1)
-        stat.data[mi.mod][i] += 1
+        @inbounds stat.data[i, Int(mod.mod) + 1] += 1
     end
 end
-# unicodeplot(stat::ModMetaHist) = ...
+
 
 
 function writestats(stat::ModMetaHist, path::String, file="mod_meta_hist.tsv.gz")
     filepath = joinpath(path, file)
-    df = mapreduce(((mod, counts), ) -> DataFrame(mod=mod, bin=range(0, 1, length=stat.n), count=counts), vcat, collect(stat.data))
+    ind = vec(sum(stats.data, dims=1) .> 0)
+    counts = stat.data[:, ind]
+    mods = instances(Modification)[ind]
+
+    df = mapreduce((mod, counts) -> DataFrame(mod=mod, bin=range(0, 1, length=stat.n), count=counts), vcat, mods, eachcol(counts))
+
     CSV.write(filepath, df, delim='\t', compress=endswith(file, ".gz"))
 end
 
