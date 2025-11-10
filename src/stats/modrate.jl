@@ -4,24 +4,49 @@ struct ModRate <: RecordStat
     n::Int
     thresh::Float64
     stat::Dict{Modification, KHist{Float64}}
+    totalmods::Dict{Modification, Int}
 end
-ModRate(n=500, thresh=0.9*255) = ModRate(n, thresh, Dict{Modification, KHist{Float64}}())
+ModRate(mods ; n=500, thresh=0.9*255) = ModRate(n, thresh, Dict(m => KHist(n) for m in mods), Dict(m => 0 for m in mods))
+
+recordupdates(::Type{ModRate}) = nothing
+modupdates(::Type{ModRate}) = ModUpdates
+postmodupdates(::Type{ModRate}) = PostModUpdates
+
+instantiate(::Type{ModRate}, reader, mods) = ModRate(mods)
 
 statname(::Type{ModRate}) = "Modification Rate Histogram"
 
-function update!(stat::ModRate, reader::HTSFileReader, record::BamRecord, recorddata)
-    totalmods = Dict{Modification, Int}()
-    for mi in ModIterator(record, recorddata)
-        (mi.prob > stat.thresh)   || continue
-        haskey(totalmods, mi.mod) || (totalmods[mi.mod] = 0)
-        totalmods[mi.mod] = totalmods[mi.mod] + 1
-    end
-    for (mod, total) in totalmods
-        haskey(stat.stat, mod) || (stat.stat[mod] = KHist(stat.n))
-        fit!(stat.stat[mod], total/querylength(record))
+@inline function updatemod!(stat::ModRate, mod::ModificationInfo, record::BamRecord, recorddata)
+    if mod.prob > stat.thresh
+        stat.totalmods[mod.mod] = stat.totalmods[mod.mod] + 1
     end
 end
-unicodeplot(stat::ModRate) = [lineplot(first.(kh.bins), last.(kh.bins), title=string(mod)) for (mod, kh) in stat.stat]
+
+@inline function updatepostmod!(stat::ModRate, record::BamRecord, recorddata)
+    for (mod, total) in stat.totalmods
+        fit!(stat.stat[mod], total/querylength(record))
+    end
+    ## reset for next read
+    for mod in keys(stat.totalmods)
+        stat.totalmods[mod] = 0
+    end
+end
+
+
+
+# function update!(stat::ModRate, reader::HTSFileReader, record::BamRecord, recorddata)
+#     totalmods = Dict{Modification, Int}()
+#     for mi in ModIterator(record, recorddata)
+#         (mi.prob > stat.thresh)   || continue
+#         haskey(totalmods, mi.mod) || (totalmods[mi.mod] = 0)
+#         totalmods[mi.mod] = totalmods[mi.mod] + 1
+#     end
+#     for (mod, total) in totalmods
+#         haskey(stat.stat, mod) || (stat.stat[mod] = KHist(stat.n))
+#         fit!(stat.stat[mod], total/querylength(record))
+#     end
+# end
+# unicodeplot(stat::ModRate) = [lineplot(first.(kh.bins), last.(kh.bins), title=string(mod)) for (mod, kh) in stat.stat]
 
 function writestats(stat::ModRate, path::String, file="modrate.tsv.gz")
     filepath = joinpath(path, file)
