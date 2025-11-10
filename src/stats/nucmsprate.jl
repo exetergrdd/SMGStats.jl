@@ -5,18 +5,24 @@ struct NucMSPRate <: RecordStat
     msp::KHist{Float64}
 end
 NucMSPRate(n=500) = NucMSPRate(KHist(n), KHist(n))
+instantiate(::Type{NucMSPRate}, reader, mods) = NucMSPRate()
+
+recordupdates(::Type{<:NucMSPRate})  = RecordUpdates
+modupdates(::Type{<:NucMSPRate})     = nothing
+postmodupdates(::Type{<:NucMSPRate}) = nothing
+
 
 statname(::Type{NucMSPRate}) = "Nucleosome and MSP rate historgram"
 
-function update!(stat::NucMSPRate, reader::HTSFileReader, record::BamRecord, recorddata)
-    nn = length(firenucs(record, recorddata))
-    nm = length(firemsps(record, recorddata))
+@inline function updaterecord!(stat::NucMSPRate, record::BamRecord, recorddata)
+   
+    nn = length(SMGReader.firenucpos(record, recorddata))
+    nm = length(SMGReader.firemsppos(record, recorddata))
 
     fit!(stat.nuc, nn/querylength(record))
     fit!(stat.msp, nm/querylength(record))
 end
-unicodeplot(stat::NucMSPRate) = [lineplot(first.(stat.nuc.bins), last.(stat.nuc.bins), title="Nucleosome Rate"),
-                                 lineplot(first.(stat.msp.bins), last.(stat.msp.bins), title="MSP Rate")]
+
 
 function writestats(stat::NucMSPRate, path::String, file="nuc_msp_rate.tsv.gz")
     filepath = joinpath(path, file)
