@@ -6,23 +6,31 @@ struct NucMSPLenHist <: RecordStat
     msp::Vector{Int}
 end
 NucMSPLenHist(n=1000) = NucMSPLenHist(zeros(n), zeros(n))
+
+instantiate(::Type{NucMSPLenHist}, reader, mods) = NucMSPLenHist()
+
+recordupdates(::Type{<:NucMSPLenHist})  = RecordUpdates
+modupdates(::Type{<:NucMSPLenHist})     = nothing
+postmodupdates(::Type{<:NucMSPLenHist}) = nothing
+
 statname(::Type{NucMSPLenHist}) = "Nucleosome and MSP length histogram"
 
-function update!(stat::NucMSPLenHist, reader::HTSFileReader, record::BamRecord, recorddata)
-    for (ns, nl) in firenucs(record, recorddata)
+@inline function updaterecord!(stat::NucMSPLenHist, record::BamRecord, recorddata)
+
+    @inbounds for nl in SMGReader.firenuclen(record, recorddata.auxmap)
         if 1 ≤ nl ≤ length(stat.nuc)
             stat.nuc[nl] += 1
         end
     end
-    for (as, al, aq) in firemsps(record, recorddata)
+
+    @inbounds for al in SMGReader.firemsplen(record, recorddata.auxmap)
         if 1 ≤ al ≤ length(stat.nuc)
             stat.msp[al] += 1
         end
     end
-   
 end
-unicodeplot(stat::NucMSPLenHist) = [barplot(1:length(stat.nuc), stat.nuc, title="Nucleosome Length Hist"),
-                                    barplot(1:length(stat.msp), stat.msp, title="MSP Length HIst")]
+# unicodeplot(stat::NucMSPLenHist) = [barplot(1:length(stat.nuc), stat.nuc, title="Nucleosome Length Hist"),
+                                    # barplot(1:length(stat.msp), stat.msp, title="MSP Length HIst")]
 
 function writestats(stat::NucMSPLenHist, path::String, file="nuc_msp_length_hist.tsv.gz")
     filepath = joinpath(path, file)
