@@ -3,6 +3,15 @@
 
 abstract type RecordStat end
 
+struct RecordUpdates end
+struct ModUpdates end
+struct PostModUpdates end
+
+recordupdates(::Type) = nothing
+modupdates(::Type) = nothing
+postmodupdates(::Type) = nothing
+
+
 plotstat(stat::String, dict::Dict{T, V}) where {T, V} = plotstat(stat, dict[stat])
 plotstat(stat::String, data::DataFrame) = plotstat(getfield(SMGStats, Symbol(stat)), data)
 statname(stat::S) where {S <: AbstractString} = statname(getfield(SMGStats, Symbol(stat)))
@@ -10,58 +19,105 @@ statname(stat) = string("Unk: ", stat)
 
 ### Each stat should define
 # 1. A subtype of RecordStat: struct MyStat <: RecordStat
-# 2. A constructor: MyStat()
+# 2. An instantiate(::Type{MyStat}, reader, mods) function
 # 3. A function that returns the name: statname(::Type{MyStat}) = 
-# 3. An update function: update!(stat::MyStat, reader, record, recorddata)
-# 4. A output function with default filename: writestats(stat::MyStat, path, file="mystat.tsv.gz")
+# 4. Functions to determine when the stat should be updated
+# 4a. isrecordstat(::MyStat) returns true if stat should be updated with each record with `updaterecord!`
+# 4b. ismodstat(::MyStat) returns true if stat should be updated with each mod with `updatemod!`
+# 4c. postmodupdate(::MyStat) returns true if it need updating after iterating over mods
+# Update functions
+#   updaterecord!(stat::MyStat, record, recorddata)
+#   updatemod!(stat::MyStat, mod, record, recorddata)
+#   updatepost!(stat::MyStat, record, recorddata)
+# 5. A output function with default filename: writestats(stat::MyStat, path, file="mystat.tsv.gz")
 #     returns written file
 #     writes a dataframe
-# 5. A plotting function (using CairoMakie) defined on the dataframe written in 4:
+# 6. A plotting function (using CairoMakie) defined on the dataframe written in 4:
 #    plotstat(::Type{MyStat}, data::DataFrame)
 
 
 include("chromcounts.jl")
-include("readlengthhist.jl")
+# include("readlengthhist.jl")
 include("modhist.jl")
 include("modrate.jl")
 include("nucmsprate.jl")
 include("nucmsplength.jl")
 include("modmeta.jl")
+include("readlengthcounter.jl")
+include("modcrosscor.jl")
 
 
-
-
+# isrecordstat(x) = true
 
 ####################################################################
 ####################################################################
 ####################################################################
 
-function firestats(file, nr = 100_000)
-    
+# statnames = (ChromStat, ReadLengthCounter, ModHist, ModRate, NucMSPRate, NucMSPLenHist, ModMetaHist)
+
+instantiate(x, reader, mods) = error(string("unrecognised: ", x))
+      
+macro smgstats(types...)
+    return Expr(:curly, :Tuple, types...)
+end
+
+
+@inline updatestat!(::Nothing, args...) = nothing
+@inline updatestat!(::Type{RecordUpdates}, stat, record, recorddata)    = updaterecord!(stat, record, recorddata)
+@inline updatestat!(::Type{ModUpdates}, stat, mod, record, recorddata)  = updatemod!(stat, mod, record, recorddata)
+@inline updatestat!(::Type{PostModUpdates}, stat, record, recorddata)   = updatepostmod!(stat, record, recorddata)
+
+
+@generated function instantiate(::Type{T}, reader, mods) where {T <: Tuple}
+    exprs = [:(instantiate($(T.parameters[i]), reader, mods)) for i in 1:length(T.parameters)]
+    return :(($(exprs...),))
+end 
+
+@generated function update_record_stats!(stats::TT, record, recorddata) where {TT <: Tuple}
+    exprs = [:(updatestat!(recordupdates($(TT.parameters[i])), stats[$i], record, recorddata)) for i in 1:length(TT.parameters)]
+    return Expr(:block, exprs...)
+end
+
+
+@generated function update_mod_stats!(stats::TT, mod, record, recorddata) where {TT <: Tuple}
+    exprs = [:(updatestat!(modupdates($(TT.parameters[i])), stats[$i], mod, record, recorddata)) for i in 1:length(TT.parameters)]
+    return Expr(:block, exprs...)
+end
+
+
+@generated function update_postmod_stats!(stats::TT, record, recorddata) where {TT <: Tuple}
+    exprs = [:(updatestat!(postmodupdates($(TT.parameters[i])), stats[$i], record, recorddata)) for i in 1:length(TT.parameters)]
+    return Expr(:block, exprs...)
+end
+
+
+
+function firestats(file, stattypes::Type{<:Tuple}; nr=100_000)
     reader = open(HTSFileReader, file)
-    @show nrecords(reader)
     recorddata = StencillingData(AuxMapModFire())
+    mods = (mod_5mC, mod_5hmC, mod_6mA)
 
-    bamstats = (ChromStat(), ReadLengthHist(), ModHist(), ModRate(), NucMSPRate(), NucMSPLenHist(), ModMetaHist())
+    stats = instantiate(stattypes, reader, mods)
+
     r = 0
-    it = eachrecord(reader)
-    nt = length(it)
-    @show nt
-    p = Progress(nr == -1 ? nt : min(nt, nr))
-
-    for record in it
+    for record in eachrecord(reader)
         processread!(record, recorddata)
 
-        for bamstat in bamstats
-            update!(bamstat, reader, record, recorddata)
+        update_record_stats!(stats, record, recorddata)
+        for mi in ModIterator(record, recorddata)
+            update_mod_stats!(stats, mi, record, recorddata)
         end
+        update_postmod_stats!(stats, record, recorddata)
+
         r += 1
-        next!(p)
-        (nr == r) && break
+        (r == nr) && break
     end
+
     close(reader)
-    bamstats
+    stats
 end
+
+
 
 function writeallstats(stats, path::String, file="meta.tsv")
     mkpath(path)
@@ -87,6 +143,7 @@ end
 function samplesummary(data, thresh=0.9)
 
     summary = DataFrame(Stat=String[], value=Float64[], Units=String[])
+    modstats = DataFrame(Mod=String[], Percent=Float64[], Total_Gb=Float64[])
     ### total reads
     if haskey(data, "ChromStat")
         totalreads = sum(data["ChromStat"].count)/1e+6
@@ -94,25 +151,31 @@ function samplesummary(data, thresh=0.9)
     end
 
     ### total bases and N50 mean +/- std read length
-    if haskey(data, "ReadLengthHist")
-        df = data["ReadLengthHist"]
-        df.rl = 10.0.^(df.readlength)
-        df.totalbases = df.rl.*df.count
+    if haskey(data, "ReadLengthCounter")
+        df = data["ReadLengthCounter"]
 
-        sort!(df.readlength, rev=true)
-        df.cumlative = cumsum(df.totalbases)
-        push!(summary, ("Total Bases", df.cumlative[1]/1e+6, "Gb"))
+        totalseq = df.readlength'*df.count
+        push!(summary, ("Total Bases", totalseq/1e+6, "Gb"))
+        cumlat = 0
+        n50_i = 0
+        for i = size(df, 1):-1:1
+            cumlat += df.readlength[i]*df.count[i]
+            if cumlat > totalseq*0.5
+                n50_i = i - 1
+                break
+            end
+        end
     
-        n50 = df.rl[findfirst(df.cumlative .> 0.5*df.cumlative[1])]/1000
-        
-        push!(summary, ("N50", n50, "Kb"))
+        n50 = df.readlength[n50_i]/1000
+        push!(summary, ("N50*", n50, "Kb"))
 
-
-        mean_read_length = df.rl'*(df.count/sum(df.count))
-        std_read_length  = sqrt((df.rl.*df.rl)'*(df.count/sum(df.count)) - mean_read_length*mean_read_length)
+        w = Weights(df.count)
+        mean_read_length = mean(df.readlength, w)
+        std_read_length = std(df.readlength, w)
         
         push!(summary, ("Mean Read Length", mean_read_length/1000, "Kb"))
         push!(summary, ("Std Read Length", std_read_length/1000, "Kb"))
+    
 
     end
 
@@ -123,19 +186,20 @@ function samplesummary(data, thresh=0.9)
         sdf.ismod = sdf.prob .> thresh
         transform!(groupby(sdf, :variable), :value => (v -> v/sum(v)) => :proportion)
 
-        mdf = combine(groupby(sdf, [:variable, :ismod]), :proportion => sum => :proportion, :value => sum => :value)
+        mdf = combine(groupby(sdf, [:variable, :ismod]), :proportion => sum => :proportion, :value => sum => :Total_Gb)
         mdf = mdf[mdf.ismod, :]
-        mdf.value ./= 1e+6
-        rename!(mdf, :value => :total, :variable => :mod)
-        
-        ss = stack(mdf, [:proportion, :total])
-        ss.Stat = string.(ss.mod, " ", ss.variable)
-        ss.Units = ifelse.(ss.variable .== "total", "Gb", "proportion")
+        mdf.Total_Gb ./= 1e+6
+        mdf.proportion .*= 100
+        display(mdf)
 
-        append!(summary, ss[!, [:Stat, :value, :Units]])
+        rename!(mdf,  :variable => :Mod, :proportion => :Percent)
+        modstats = mdf[!, [:Mod, :Percent, :Total_Gb]]
+        
+        modstats.Mod = replace.(modstats.Mod, "mod_" => "")
+        sort!(modstats, :Mod)
 
     end
 
     ### modification rates
-    summary
+    summary, modstats
 end
