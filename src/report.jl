@@ -35,7 +35,16 @@ function htmlreport(sample, data, path::String, file="report.html")
     ### summary
     println(body, "<article id=\"summary\">")
     println(body, "<h5>Summary:</h5>")
-    dataframe_to_htmltable(body, samplesummary(data))
+    samplestats, modstats = samplesummary(data)
+    dataframe_to_htmltable(body, samplestats)
+    if any(==("N50*"), samplestats.Stat)
+        println(body, "<small>*N50 calculation currently not robust, mean read length more representative</small>")
+    end
+    if !isempty(modstats)
+        println(body, "<p></p>")
+        println(body, "<p></p>")
+        dataframe_to_htmltable(body, modstats)
+    end
     println(body, "</article>")
 
     for stat in statnames
