@@ -4,7 +4,8 @@ struct ChromStat{S} <: RecordStat
     reader::HTSFileReader
 end
 
-instantiate(::Type{ChromStat}, reader, mods) = ChromStat(CountMap(Int32), reader)
+instantiate(::Type{ChromStat}, config) = ChromStat(CountMap(Int32), config.reader)
+# instantiate(::Type{ChromStat}, reader, mods) = ChromStat(CountMap(Int32), reader)
 ChromStat(reader) = ChromStat(CountMap(Int32), reader)
 
 recordupdates(::Type{<:ChromStat})  = RecordUpdates
@@ -13,10 +14,6 @@ postmodupdates(::Type{<:ChromStat}) = nothing
 
 @inline updaterecord!(stat::ChromStat, record::BamRecord, recorddata) = fit!(stat.stat, record.core.tid)
 
-struct ChromStatID <: RecordStat
-    data::Dict{Int32, Int}
-    reader::HTSFileReader
-end
 
 
 
