@@ -37,7 +37,8 @@ recordupdates(::Type{<:ModCrossCor}) = RecordUpdates
 modupdates(::Type{<:ModCrossCor}) = ModUpdates
 postmodupdates(::Type{<:ModCrossCor}) = PostModUpdates
 
-instantiate(::Type{ModCrossCor}, reader, mods) = ModCrossCor(mods=mods)
+instantiate(::Type{ModCrossCor}, config) = ModCrossCor(mods=config.mods)
+# instantiate(::Type{ModCrossCor}, reader, mods) = ModCrossCor(mods=mods)
 
 statname(::Type{ModCrossCor}) = "Modification Auto/Cross Correlation"
 
