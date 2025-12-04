@@ -7,7 +7,9 @@ struct NucMSPLenHist <: RecordStat
 end
 NucMSPLenHist(n=1000) = NucMSPLenHist(zeros(n), zeros(n))
 
+instantiate(::Type{NucMSPLenHist}, config) = NucMSPLenHist()
 instantiate(::Type{NucMSPLenHist}, reader, mods) = NucMSPLenHist()
+
 
 recordupdates(::Type{<:NucMSPLenHist})  = RecordUpdates
 modupdates(::Type{<:NucMSPLenHist})     = nothing
