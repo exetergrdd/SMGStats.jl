@@ -1,12 +1,12 @@
 ############################# chromosome counts #############################
 struct ChromStat{S} <: RecordStat
     stat::S
-    reader::HTSFileReader
+    chroms::Dict{Int32, String}
 end
 
-instantiate(::Type{ChromStat}, config) = ChromStat(CountMap(Int32), config.reader)
-# instantiate(::Type{ChromStat}, reader, mods) = ChromStat(CountMap(Int32), reader)
-ChromStat(reader) = ChromStat(CountMap(Int32), reader)
+instantiate(::Type{ChromStat}, config) = ChromStat(CountMap(Int32), referencedict(config.reader))
+# instantiate(::Type{ChromStat}, reader, mods) = ChromStat(CountMap(Int32), referencedict(reader))
+ChromStat(reader) = ChromStat(CountMap(Int32), referencedict(reader))
 
 recordupdates(::Type{<:ChromStat})  = RecordUpdates
 modupdates(::Type{<:ChromStat})     = nothing
@@ -42,11 +42,12 @@ function writestats(stat::ChromStat, path::String, file="chromstats.tsv")
     filepath = joinpath(path, file)
     
     chromids = sort(collect(keys(stat.stat)))
+
     counts = [stat.stat.value[c] for c in chromids]
-    chroms = refname.(reader.hdr, chromids)
+    chroms = [stat.chroms[c] for c in chromids]
 
     df = DataFrame(chrom=chroms, count=counts)
-    sort!(df, order(:chrom, by=chomlt))
+    sort!(df, order(:chrom, by=chromlt))
     CSV.write(filepath, df, delim='\t', compress=endswith(file, ".gz"))
 end
 #  TODO:: define this if a specialised stat reader is necessary
