@@ -112,6 +112,12 @@ function firestats(file, stattypes::Type{<:Tuple}; nr=100_000, config=(;))
     fullconfig = (; reader, mods, config...)
 
     stats = instantiate(stattypes, fullconfig)
+    isbam = endswith(".bam", file)
+
+    if isbam
+        tr = nr == -1 ? nr : nrecords(reader)
+        p = Progress(tr)
+    end
 
     r = 0
     for record in eachrecord(reader)
@@ -123,9 +129,11 @@ function firestats(file, stattypes::Type{<:Tuple}; nr=100_000, config=(;))
         end
         update_postmod_stats!(stats, record, recorddata)
 
+        isbam && next!(tr)
         r += 1
         (r == nr) && break
     end
+    isbam && update!(p, tr)
 
     close(reader)
     stats
