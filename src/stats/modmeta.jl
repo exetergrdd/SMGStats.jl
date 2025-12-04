@@ -7,8 +7,10 @@ struct ModMetaHist <: RecordStat
     thresh::Float64
     data::Matrix{Int}
 end
-ModMetaHist(mods; n=1000, thresh=0.9*255) = ModMetaHist(n, thresh, zeros(n, length(instances(Modification))))
-instantiate(::Type{ModMetaHist}, reader, mods) = ModMetaHist(mods)
+ModMetaHist(; n=1000, thresh=0.9*255) = ModMetaHist(n, thresh, zeros(n, length(instances(Modification))))
+instantiate(::Type{ModMetaHist}, config) = ModMetaHist()
+instantiate(::Type{ModMetaHist}, reader, mods) = ModMetaHist()
+
 
 
 recordupdates(::Type{ModMetaHist})  = nothing
@@ -29,7 +31,7 @@ end
 
 function writestats(stat::ModMetaHist, path::String, file="mod_meta_hist.tsv.gz")
     filepath = joinpath(path, file)
-    ind = vec(sum(stats.data, dims=1) .> 0)
+    ind = vec(sum(stat.data, dims=1) .> 0)
     counts = stat.data[:, ind]
     mods = instances(Modification)[ind]
 
