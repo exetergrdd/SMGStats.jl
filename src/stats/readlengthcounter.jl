@@ -5,6 +5,7 @@ struct ReadLengthCounter <: RecordStat
 end
 ReadLengthCounter() = ReadLengthCounter(Dict{Int, Int}())
 
+instantiate(::Type{ReadLengthCounter}, config) = ReadLengthCounter()
 
 instantiate(::Type{ReadLengthCounter}, reader, mods) = ReadLengthCounter()
 
