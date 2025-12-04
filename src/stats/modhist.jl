@@ -7,6 +7,7 @@ struct ModHist <: RecordStat
 end
 ModHist() = ModHist(zeros(256, length(instances(Modification))))
 
+instantiate(::Type{ModHist}, config) = ModHist(zeros(256, length(instances(Modification))))
 
 instantiate(::Type{ModHist}, reader, mods) = ModHist(zeros(256, length(instances(Modification))))
 recordupdates(::Type{ModHist}) = nothing
@@ -20,8 +21,11 @@ statname(::Type{ModHist}) = "Modification histogram"
 
 function writestats(stat::ModHist, path::String, file="modhist.tsv.gz")
     filepath = joinpath(path, file)
-    ind = sum(stat.data, dims=1) .> 0
-    df = [DataFrame(ml=0:255, prob=(0:255)/255) DataFrame(stat.data[:, ind], string.(instances(Modification)[ind]))]
+    ind = vec(sum(stat.data, dims=1) .> 0)
+
+    # display(sdata)
+    # display(ind)
+    df = [DataFrame(ml=0:255, prob=(0:255)/255) DataFrame(stat.data[:, ind], collect(string.(instances(Modification)[ind])))]
     
     CSV.write(filepath, df, delim='\t', compress=endswith(file, ".gz"))
 end
