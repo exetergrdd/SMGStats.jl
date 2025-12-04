@@ -6,13 +6,16 @@ struct ModRate <: RecordStat
     stat::Dict{Modification, KHist{Float64}}
     totalmods::Dict{Modification, Int}
 end
-ModRate(mods ; n=500, thresh=0.9*255) = ModRate(n, thresh, Dict(m => KHist(n) for m in mods), Dict(m => 0 for m in mods))
+ModRate(mods ; n=150, thresh=0.9*255) = ModRate(n, thresh, Dict(m => KHist(n) for m in mods), Dict(m => 0 for m in mods))
 
 recordupdates(::Type{ModRate}) = nothing
 modupdates(::Type{ModRate}) = ModUpdates
 postmodupdates(::Type{ModRate}) = PostModUpdates
 
+instantiate(::Type{ModRate}, config) = ModRate(config.mods)
+
 instantiate(::Type{ModRate}, reader, mods) = ModRate(mods)
+
 
 statname(::Type{ModRate}) = "Modification Rate Histogram"
 
