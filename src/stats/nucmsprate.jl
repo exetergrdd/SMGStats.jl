@@ -4,7 +4,9 @@ struct NucMSPRate <: RecordStat
     nuc::KHist{Float64}
     msp::KHist{Float64}
 end
-NucMSPRate(n=500) = NucMSPRate(KHist(n), KHist(n))
+NucMSPRate(n=150) = NucMSPRate(KHist(n), KHist(n))
+instantiate(::Type{NucMSPRate}, config) = NucMSPRate()
+
 instantiate(::Type{NucMSPRate}, reader, mods) = NucMSPRate()
 
 recordupdates(::Type{<:NucMSPRate})  = RecordUpdates
