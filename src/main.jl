@@ -12,6 +12,18 @@ function smglog(msg...)
 end
 
 
+function default_config(genome)
+
+    if gethostname() == "penrose"
+        return "/penrose/projects/ont/scripts/smgstats/smgstats.config.$(genome).yaml"
+    else
+        error("Default not defined for $genomee")
+    end
+
+end
+
+statreport(bamfile, genome="hg19"; yaml=default_config(genome), nr = -1) = runstats(bamfile, yaml, nr=nr)
+
 function runstats(file, yaml; nr = -1)
 
     start = time()
