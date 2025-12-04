@@ -1,5 +1,10 @@
 
 
+function htmlreport(stats)
+    samplename = basename(dirname(dirname(stats.path)))
+    htmlreport(samplename, stats.stats, stats.path)
+end
+
 function htmlreport(sample, data, path::String, file="report.html")
 
     
