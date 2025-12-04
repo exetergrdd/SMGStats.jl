@@ -19,7 +19,7 @@ statname(stat) = string("Unk: ", stat)
 
 ### Each stat should define
 # 1. A subtype of RecordStat: struct MyStat <: RecordStat
-# 2. An instantiate(::Type{MyStat}, reader, mods) function
+# 2. An instantiate(::Type{MyStat}, config) function
 # 3. A function that returns the name: statname(::Type{MyStat}) = 
 # 4. Functions to determine when the stat should be updated
 # 4a. isrecordstat(::MyStat) returns true if stat should be updated with each record with `updaterecord!`
@@ -35,6 +35,7 @@ statname(stat) = string("Unk: ", stat)
 # 6. A plotting function (using CairoMakie) defined on the dataframe written in 4:
 #    plotstat(::Type{MyStat}, data::DataFrame)
 
+include("statconfig.jl")
 
 include("chromcounts.jl")
 # include("readlengthhist.jl")
@@ -45,6 +46,7 @@ include("nucmsplength.jl")
 include("modmeta.jl")
 include("readlengthcounter.jl")
 include("modcrosscor.jl")
+include("metaplot.jl")
 
 
 # isrecordstat(x) = true
@@ -67,6 +69,11 @@ end
 @inline updatestat!(::Type{ModUpdates}, stat, mod, record, recorddata)  = updatemod!(stat, mod, record, recorddata)
 @inline updatestat!(::Type{PostModUpdates}, stat, record, recorddata)   = updatepostmod!(stat, record, recorddata)
 
+
+@generated function instantiate(::Type{T}, config) where {T <: Tuple}
+    exprs = [:(instantiate($(T.parameters[i]), config)) for i in 1:length(T.parameters)]
+    return :(($(exprs...),))
+end 
 
 @generated function instantiate(::Type{T}, reader, mods) where {T <: Tuple}
     exprs = [:(instantiate($(T.parameters[i]), reader, mods)) for i in 1:length(T.parameters)]
@@ -91,13 +98,20 @@ end
 end
 
 
+function calculatestats(file,  stattypes::Tuple{<:Tuple}, mods, recordata; nr=100_000, config=(;))
 
-function firestats(file, stattypes::Type{<:Tuple}; nr=100_000)
+    reader = open(HTSFileReader, file)
+end
+
+
+function firestats(file, stattypes::Type{<:Tuple}; nr=100_000, config=(;))
     reader = open(HTSFileReader, file)
     recorddata = StencillingData(AuxMapModFire())
     mods = (mod_5mC, mod_5hmC, mod_6mA)
 
-    stats = instantiate(stattypes, reader, mods)
+    fullconfig = (; reader, mods, config...)
+
+    stats = instantiate(stattypes, fullconfig)
 
     r = 0
     for record in eachrecord(reader)
@@ -119,7 +133,10 @@ end
 
 
 
-function writeallstats(stats, path::String, file="meta.tsv")
+function writeallstats(stats, path::String="", file="meta.tsv"; bamfile="", statdir="stats")
+    if isempty(path) && !isempty(bamfile)
+        path = joinpath(dirname(bamfile), statdir)
+    end
     mkpath(path)
     filepath = joinpath(path, file)
     statnames = String[]
@@ -134,9 +151,14 @@ function writeallstats(stats, path::String, file="meta.tsv")
     println("Written: ", f)
 end
 
-function readstats(path::String, file="meta.tsv")
+function readstats(path::String="", file="meta.tsv" ; bamfile="", statdir="stats")
+    if isempty(path) && !isempty(bamfile)
+        path = joinpath(dirname(bamfile), statdir)
+    end
     meta = CSV.read(joinpath(path, file), DataFrame)
-    Dict(statlabel => CSV.read(file, DataFrame) for (statlabel, file) in zip(meta.Stat, meta.File))
+    stats = Dict(statlabel => CSV.read(file, DataFrame) for (statlabel, file) in zip(meta.Stat, meta.File))
+
+    (;path, meta, stats)
 end
 
 
