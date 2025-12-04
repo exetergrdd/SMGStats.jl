@@ -1,23 +1,26 @@
 module SMGStats
 
+import YAML
+
+using AlgebraOfGraphics
+using CSV
+using CairoMakie
+using ColorSchemes
+using DataFrames
+using Dates
+using GenomicFeatures
+using OnlineStats
+using ProgressMeter
 using SMGReader
 using Statistics
 using StatsBase
-using OnlineStats
-using ProgressMeter
-# using UnicodePlots
-using DataFrames, CSV
-using GenomicFeatures
-
-import YAML
-
-using CairoMakie, AlgebraOfGraphics, ColorSchemes
 
 export firestats, unicodeplot, displayplots, writeallstats, readstats, plotstat, htmlreport, statname, samplesummary,
         ChromStat, ModCrossCor, ModHist, ModMetaHist, ModRate, NucMSPLenHist, NucMSPRate, ReadLengthCounter, MetaPlot,
         @smgstats, 
         metaplot, loadregions,
-        loadmultichromintervals, loadstatconfig
+        loadmultichromintervals, loadstatconfig,
+        runstats
         
 
 
@@ -28,4 +31,5 @@ include("regions.jl")
 include("stats/stats.jl")
 include("report.jl")
 include("summarystats.jl")
+include("main.jl")
 end
