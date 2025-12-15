@@ -11,6 +11,9 @@ recordupdates(::Type) = nothing
 modupdates(::Type) = nothing
 postmodupdates(::Type) = nothing
 
+### define default that all stats are compatabile with a give auxillary type.
+compatible(::Type{S}, ::Type{A}) where {S, A} = true
+
 
 plotstat(stat::String, dict::Dict{T, V}) where {T, V} = plotstat(stat, dict[stat])
 plotstat(stat::String, data::DataFrame) = plotstat(getfield(SMGStats, Symbol(stat)), data)
@@ -47,7 +50,7 @@ include("modmeta.jl")
 include("readlengthcounter.jl")
 include("modcrosscor.jl")
 include("metaplot.jl")
-
+include("nuc_mono_di.jl")
 
 # isrecordstat(x) = true
 
@@ -98,9 +101,39 @@ end
 end
 
 
-function calculatestats(file,  stattypes::Tuple{<:Tuple}, mods, recordata; nr=100_000, config=(;))
+function calculatestats(file, stattypes, recorddata, mods; nr=100_000, config=(;))
 
     reader = open(HTSFileReader, file)
+
+    fullconfig = (; reader, mods, config...)
+
+    stats = instantiate(stattypes, fullconfig)
+    isbam = endswith(".bam", file)
+
+    if isbam
+        tr = nr == -1 ? nr : nrecords(reader)
+        p = Progress(tr)
+    end
+
+    r = 0
+    for record in eachrecord(reader)
+        processread!(record, recorddata) || continue
+
+        update_record_stats!(stats, record, recorddata)
+        for mi in ModIterator(record, recorddata)
+            update_mod_stats!(stats, mi, record, recorddata)
+        end
+        update_postmod_stats!(stats, record, recorddata)
+
+        isbam && next!(p)
+        r += 1
+        (r == nr) && break
+    end
+    isbam && update!(p, tr)
+
+    close(reader)
+    stats
+
 end
 
 
@@ -121,7 +154,7 @@ function firestats(file, stattypes::Type{<:Tuple}; nr=100_000, config=(;))
 
     r = 0
     for record in eachrecord(reader)
-        processread!(record, recorddata)
+        processread!(record, recorddata) || continue
 
         update_record_stats!(stats, record, recorddata)
         for mi in ModIterator(record, recorddata)
@@ -129,7 +162,7 @@ function firestats(file, stattypes::Type{<:Tuple}; nr=100_000, config=(;))
         end
         update_postmod_stats!(stats, record, recorddata)
 
-        isbam && next!(tr)
+        isbam && next!(p)
         r += 1
         (r == nr) && break
     end
