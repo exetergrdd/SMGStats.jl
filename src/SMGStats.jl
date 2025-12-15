@@ -48,7 +48,6 @@ include("bitpacked.jl")
 include("regions.jl")
 include("stats/stats.jl")
 include("report.jl")
-include("summarystats.jl")
 include("multireport.jl")
 include("main.jl")
 
