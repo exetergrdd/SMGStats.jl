@@ -14,7 +14,9 @@ modupdates(::Type{<:NucMSPRate})     = nothing
 postmodupdates(::Type{<:NucMSPRate}) = nothing
 
 
-statname(::Type{NucMSPRate}) = "Nucleosome and MSP rate historgram"
+statname(::Type{NucMSPRate}) = "Nucleosome and MSP rate histogram"
+### stat not compatible with stats missing the firefields
+compatible(::Type{NucMSPRate}, ::Type{AuxMapMod}) = false
 
 @inline function updaterecord!(stat::NucMSPRate, record::BamRecord, recorddata)
    
@@ -38,34 +40,32 @@ function writestats(stat::NucMSPRate, path::String, file="nuc_msp_rate.tsv.gz")
 end
 
 
-function plotstat(::Type{NucMSPRate}, df::DataFrame, scale=1)
-    # plt = data(df) * mapping(:Rate, :Count, color=:Feature) * mapping(col=:Feature) * visual(Lines)
-    # f = draw(plt, axis= (; xgridvisible=false, ygridvisible=false))
-    # plt_overlay = data(df) * mapping(:Rate, :Count, color=:Feature) * visual(Lines)
-    # n = length(unique(df.Feature))
-    
-    # draw!(f.figure[2, 1:n], plt_overlay, axis=(; xlabel="feature/bp", xgridvisible=false, ygridvisible=false))
-    # f
-
-
-    #####
+function plotstat(::Type{NucMSPRate}, df::DataFrame, scale=1, smooth_sig=10, axis_thresh=0.999)
+  
     transform!(groupby(df, :Feature), :Count => (c -> c/sum(c)) => :proportion)
+    transform!(groupby(df, :Feature), :proportion => cumsum => :cumsum, :proportion => (x -> kernelsmooth(x, smooth_sig)) => :smoothprop)
 
-    ### quantiles for boxplot
-    qdf = combine(groupby(df, :Feature, sort=true), df -> quantile_from_freq(df.Rate, df.proportion))
-    
-    
     n = length(unique(df.Feature))
-    f  = Figure(size=(1000, 400))
-    ### draw boxplots from qdf
-    ax = Axis(f[1:2, 1:n], xgridvisible=false, ygridvisible=false, ylabel="Feature/bp", xticks=(1:n, qdf.Feature))
-    quantileboxplot!(qdf)
+    xlt_thresh = combine(groupby(df[df.cumsum .> axis_thresh, :], :Feature), df -> df[argmin(df.cumsum), :]).Rate |> maximum
+    xlt_med = combine(groupby(df[df.cumsum .> 0.5, :], :Feature), df -> df[argmin(df.cumsum), :]).Rate |> maximum
 
-    plt = data(df) * mapping(:Rate, :proportion, color=:Feature) * mapping(col=:Feature) * visual(Lines)
+    xlt = max(xlt_thresh, 2*xlt_med)
+
+    f  = Figure(size=(1000, 500))
+    #### viobox
+    ax = Axis(f[1:2, 1:n], xgridvisible=false, ygridvisible=false, ylabel="Feature/bp")
+    vioboxdist!(df, :Feature, :Rate, :proportion)
+    ylims!(0, xlt)
+
+    ### per Feature dist
+    
+    plt = data(df) * mapping(:Rate, direct(0), :smoothprop, color=:Feature) * mapping(col=:Feature) * visual(Band)
     draw!(f[1, (1:n) .+ n], plt, axis= (; xgridvisible=false, ygridvisible=false))
-    plt_overlay = data(df) * mapping(:Rate, :proportion, color=:Feature) * visual(Lines)
+    xlims!(0, xlt)
+    plt_overlay = data(df) * ((mapping(:Rate, direct(0), :smoothprop, color=:Feature) * visual(Band, alpha=0.5)) +  
+                              (mapping(:Rate, :smoothprop, color=:Feature) * visual(Lines))) 
     ag = draw!(f[2, (1:n) .+ n], plt_overlay, axis=(; xlabel="Feature/bp", xgridvisible=false, ygridvisible=false))
     legend!(f[1:2, 2*n + 1], ag)
-
+    xlims!(0, xlt)
     f
 end
