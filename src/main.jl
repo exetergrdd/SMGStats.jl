@@ -1,16 +1,3 @@
-"""
-    smglog(msg)
-
-Prints a timestamped, grep-friendly log line:
-
-    [2025-02-12T14:22:03] [SMGStats] <msg>
-"""
-function smglog(msg...)
-    msg = string(msg...)
-    ts = Dates.format(Dates.now(), dateformat"yyyy-mm-ddTHH:MM:SS")
-    println("[$ts] [SMGStats] $msg")
-end
-
 
 function default_config(genome)
 
@@ -24,31 +11,54 @@ end
 
 statreport(bamfile, genome="hg19"; yaml=default_config(genome), nr = -1) = runstats(bamfile, yaml, nr=nr)
 
-function runstats(file, yaml; nr = -1)
+function runstats(file, yaml; nr = -1, statdirfilename=false)
 
     start = time()
 
-    statset, config = loadstatconfig(yaml)
-
-
-    banner()
-    smglog("File       : ", file)
-    smglog("Config     : ", yaml)
-    smglog("Stats      : ", replace(string(statset), "Tuple{" => "", "}" => ""))
-    if nr != -1
-        smglog("Sampling   : ", nr, " reads")
+    if statdirfilename
+        statdir = string("stats_", join(split(basename(file), ".")[1:end-1], "."))
+    else
+        statdir = "stats"
     end
+
+
+    #### print banner
+    banner()
+    smglog("File                   : ", file)
+
+    ##### auto detect file details
+    htsdata = autodetecthtsdata(file)
+    auxmap  = autodetectaux(file) 
+    mods    = autodetectmods(file)
+    recorddata = htsdata(auxmap)
+
+    smglog("Detected Data Type     : ", htsdata)
+    smglog("Detected Aux map       : ", typeof(auxmap))
+    smglog("Detected Modifications : ", mods)
+
+    statset, config = loadstatconfig(yaml, auxmap)
+    smglog("Config                 : ", yaml)
+    smglog("Stats                  : ", replace(string(statset), "Tuple{" => "", "}" => ""))
+    smglog("Outputdir              : ", statdir)
+
+    if nr != -1
+        smglog("Sampling               : ", nr, " reads")
+    end
+
+
+    
     if hasproperty(config, :MetaPlot)
         for mp in config.MetaPlot
-            smglog("Metaplot   : ", mp.label, "\t: ", mp.width, " : ", mp.file)
+            smglog("Metaplot               : ", mp.label, "\t: ", mp.width, " : ", mp.file)
         end
     end
-    smglog("Calculating FIRE stats:")
-    stats = SMGStats.firestats(file, statset; nr=nr, config=config);
+    smglog("Calculating stats:")
+
+    stats = SMGStats.calculatestats(file, statset, recorddata, mods; nr=nr, config=config);
     smglog("Writing Stats:")
-    writeallstats(stats, bamfile=file)
+    writeallstats(stats, bamfile=file, statdir=statdir)
     smglog("Generating Report:")
-    stats = readstats(bamfile=file)
+    stats = readstats(bamfile=file, statdir=statdir)
     reportfile = htmlreport(stats)
     smglog("Written Report    : ", reportfile)
     smglog("Complete in       : ", time() - start, " seconds")
