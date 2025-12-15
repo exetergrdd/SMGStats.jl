@@ -17,7 +17,11 @@ postmodupdates(::Type{<:NucMSPLenHist}) = nothing
 
 statname(::Type{NucMSPLenHist}) = "Nucleosome and MSP length histogram"
 
-@inline function updaterecord!(stat::NucMSPLenHist, record::BamRecord, recorddata)
+### stat not compatible with stats missing the firefields
+compatible(::Type{NucMSPLenHist}, ::Type{AuxMapMod}) = false
+
+
+@inline function updaterecord!(stat::NucMSPLenHist, record::BamRecord, recorddata, mono_thresh=225)
 
     @inbounds for nl in SMGReader.firenuclen(record, recorddata.auxmap)
         if 1 ≤ nl ≤ length(stat.nuc)
@@ -47,11 +51,13 @@ end
 
 function plotstat(::Type{NucMSPLenHist}, df::DataFrame, scale=1)
     df = df[df.Length .> 1, :]
-    plt = data(df) * mapping(:Length, :Count, color=:Feature) * mapping(col=:Feature) * visual(Lines)
-    f = draw(plt, axis= (; xgridvisible=false, ygridvisible=false))
-    plt_overlay = data(df) * mapping(:Length, :Count, color=:Feature) * visual(Lines)
+    transform!(groupby(df, :Feature), :Count => (c -> c/sum(c)) => :proportion)
+    plt = data(df) * mapping(:Length, direct(0), :proportion, color=:Feature) * mapping(col=:Feature) * visual(Band)
+    f = draw(plt, figure=(; size=(1000, 500)), axis= (; xgridvisible=false, ygridvisible=false))
+    plt_overlay = data(df) * (mapping(:Length, direct(0), :proportion, color=:Feature) * visual(Band, alpha=0.5) + 
+                              mapping(:Length, :proportion, color=:Feature) * visual(Lines))
     n = length(unique(df.Feature))
     
-    draw!(f.figure[2, 1:n], plt_overlay, axis=(; xgridvisible=false, ygridvisible=false))
+    draw!(f.figure[2, 1:n], plt_overlay,  axis=(; xticks=0:75:1000, xgridvisible=false, ygridvisible=false))
     f
 end
