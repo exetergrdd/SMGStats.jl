@@ -29,14 +29,14 @@ function writestats(stat::ReadLengthCounter, path::String, file="readlengthcount
     df = DataFrame(readlength=readlengths, count=counts)
     CSV.write(filepath, df, delim='\t', compress=endswith(file, ".gz"))
 end
-function plotstat(::Type{ReadLengthCounter}, data::DataFrame, xscale=1000, yscale=1000, binsize=500)
-    f = Figure()
+function plotstat(::Type{ReadLengthCounter}, data::DataFrame, xscale=1000, yscale=1000, binsize=250)
+    f = Figure(size=(1000, 500))
     ax = Axis(f[1, 1], xgridvisible=false, ygridvisible=false, ylabel="Counts (k)")
 
     data.bins = floor.(data.readlength/binsize)
     gd = combine(groupby(data, :bins), :count => sum => :count, :readlength => mean => :readlength)
 
-    barplot!(gd.readlength/xscale, gd.count/yscale, color=:lightgrey, width=0.5)
+    barplot!(gd.readlength/xscale, gd.count/yscale, color=:darkgrey, width=0.25)
 
     w = Weights(data.count)
     mean_read_length = mean(data.readlength, w)
