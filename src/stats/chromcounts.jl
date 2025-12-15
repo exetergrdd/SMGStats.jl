@@ -47,7 +47,7 @@ function writestats(stat::ChromStat, path::String, file="chromstats.tsv")
     chroms = [stat.chroms[c] for c in chromids]
 
     df = DataFrame(chrom=chroms, count=counts)
-    sort!(df, order(:chrom, by=chromlt))
+    sort!(df, order(:chrom, lt=chromlt))
     CSV.write(filepath, df, delim='\t', compress=endswith(file, ".gz"))
 end
 #  TODO:: define this if a specialised stat reader is necessary
