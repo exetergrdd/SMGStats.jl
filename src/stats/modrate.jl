@@ -3,10 +3,10 @@
 struct ModRate <: RecordStat
     n::Int
     thresh::Float64
-    stat::Dict{Modification, KHist{Float64}}
+    stat::Dict{Modification, OnlineStats.Hist{Float64}}
     totalmods::Dict{Modification, Int}
 end
-ModRate(mods ; n=150, thresh=0.9*255) = ModRate(n, thresh, Dict(m => KHist(n) for m in mods), Dict(m => 0 for m in mods))
+ModRate(mods ; n=10_000, thresh=0.9*255) = ModRate(n, thresh, Dict(m => OnlineStats.Hist(range(0, 1, length=n+1)) for m in mods), Dict(m => 0 for m in mods))
 
 recordupdates(::Type{ModRate}) = nothing
 modupdates(::Type{ModRate}) = ModUpdates
@@ -51,30 +51,38 @@ end
 # end
 # unicodeplot(stat::ModRate) = [lineplot(first.(kh.bins), last.(kh.bins), title=string(mod)) for (mod, kh) in stat.stat]
 
+
+statdf(stat::ModRate) =  mapreduce(((k, v), ) -> DataFrame(mod=k, rate=edges_to_bins(v.edges), count=v.counts), vcat, collect(stat.stat))
+
+
 function writestats(stat::ModRate, path::String, file="modrate.tsv.gz")
     filepath = joinpath(path, file)
-    df = mapreduce(((k, v), ) -> DataFrame(mod=k, rate=first.(v.bins), count=last.(v.bins)), vcat, collect(stat.stat))
-    CSV.write(filepath, df, delim='\t', compress=endswith(file, ".gz"))
+    CSV.write(filepath, statdf(stat), delim='\t', compress=endswith(file, ".gz"))
 end
 
-function plotstat(::Type{ModRate}, df::DataFrame, scale=1)
+function plotstat(::Type{ModRate}, df::DataFrame, scale=1, smooth_sig=10, axis_thresh=0.99)
     transform!(groupby(df, :mod), :count => (c -> c/sum(c)) => :proportion)
+    transform!(groupby(df, :mod), :proportion => cumsum => :cumsum, :proportion => (x -> kernelsmooth(x, smooth_sig)) => :smoothprop)
 
-    ### quantiles for boxplot
-    qdf = combine(groupby(df, :mod), df -> quantile_from_freq(df.rate, df.proportion))
-    sort!(qdf, :mod)
-    # display(qdf)
     n = length(unique(df.mod))
-    f  = Figure(size=(1000, 400))
-    ### draw boxplots from qdf
-    ax = Axis(f[1:2, 1:n], xgridvisible=false, ygridvisible=false, ylabel="mod/bp", xticks=(1:n, qdf.mod))
-    quantileboxplot!(qdf)
+    xlt = combine(groupby(df[df.cumsum .> axis_thresh, :], :mod), df -> df[argmin(df.cumsum), :]).rate |> maximum
 
-    plt = data(df) * mapping(:rate, :proportion, color=:mod) * mapping(col=:mod) * visual(Lines)
+    f  = Figure(size=(1000, 500))
+    #### viobox
+    ax = Axis(f[1:2, 1:n], xgridvisible=false, ygridvisible=false, ylabel="mod/bp")
+    vioboxdist!(df, :mod, :rate, :proportion)
+    ylims!(0, xlt)
+
+    ### per mod dist
+    
+    plt = data(df) * mapping(:rate, direct(0), :smoothprop, color=:mod) * mapping(col=:mod) * visual(Band)
     draw!(f[1, (1:n) .+ n], plt, axis= (; xgridvisible=false, ygridvisible=false))
-    plt_overlay = data(df) * mapping(:rate, :proportion, color=:mod) * visual(Lines)
+    xlims!(0, xlt)
+    plt_overlay = data(df) * ((mapping(:rate, direct(0), :smoothprop, color=:mod) * visual(Band, alpha=0.5)) +  
+                              (mapping(:rate, :smoothprop, color=:mod) * visual(Lines))) 
     ag = draw!(f[2, (1:n) .+ n], plt_overlay, axis=(; xlabel="mod/bp", xgridvisible=false, ygridvisible=false))
     legend!(f[1:2, 2*n + 1], ag)
-
+    xlims!(0, xlt)
     f
 end
+
