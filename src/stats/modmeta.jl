@@ -42,9 +42,10 @@ end
 
 function plotstat(::Type{ModMetaHist}, df::DataFrame, scale=1)
 
-    plt = data(df) * mapping(:bin, :count, color=:mod) * mapping(col=:mod) * visual(Lines)
-    f = draw(plt, axis= (; xgridvisible=false, ygridvisible=false))
-    plt_overlay = data(df) * mapping(:bin, :count, color=:mod) * visual(Lines)
+    transform!(groupby(df, :mod), :count => (x -> x/sum(x)) => :proportion)
+    plt = data(df) * mapping(:bin, :proportion, color=:mod) * mapping(col=:mod) * visual(Lines)
+    f = draw(plt, figure=(; size=(1000, 500)), axis= (; xgridvisible=false, ygridvisible=false))
+    plt_overlay = data(df) * mapping(:bin, :proportion, color=:mod) * visual(Lines)
     n = length(unique(df.mod))
     
     draw!(f.figure[2, 1:n], plt_overlay, axis=(; xlabel="mod/bp", xgridvisible=false, ygridvisible=false))
