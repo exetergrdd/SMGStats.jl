@@ -101,7 +101,7 @@ end
 end
 
 
-function calculatestats(file, stattypes, recorddata, mods; nr=100_000, config=(;))
+function calculatestats(file, stattypes, recorddata, mods; nr=100_000, config=(;), filtfun=validflag)
 
     reader = open(HTSFileReader, file)
 
@@ -117,6 +117,7 @@ function calculatestats(file, stattypes, recorddata, mods; nr=100_000, config=(;
 
     r = 0
     for record in eachrecord(reader)
+        filtfun(record) || continue
         processread!(record, recorddata) || continue
 
         update_record_stats!(stats, record, recorddata)
@@ -137,7 +138,7 @@ function calculatestats(file, stattypes, recorddata, mods; nr=100_000, config=(;
 end
 
 
-function firestats(file, stattypes::Type{<:Tuple}; nr=100_000, config=(;))
+function firestats(file, stattypes::Type{<:Tuple}; nr=100_000, config=(;), filtfun=validflag)
     reader = open(HTSFileReader, file)
     recorddata = StencillingData(AuxMapModFire())
     mods = (mod_5mC, mod_5hmC, mod_6mA)
@@ -154,6 +155,7 @@ function firestats(file, stattypes::Type{<:Tuple}; nr=100_000, config=(;))
 
     r = 0
     for record in eachrecord(reader)
+        filtfun(record) || continue
         processread!(record, recorddata) || continue
 
         update_record_stats!(stats, record, recorddata)
