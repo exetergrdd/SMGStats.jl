@@ -23,7 +23,8 @@ export firestats, unicodeplot, displayplots, writeallstats, readstats, plotstat,
         metaplot, loadregions,
         loadmultichromintervals, loadstatconfig,
         runstats,
-        combinereports
+        combinereports,
+        modtable
         
 
 
@@ -50,5 +51,6 @@ include("stats/stats.jl")
 include("report.jl")
 include("multireport.jl")
 include("main.jl")
+include("summarystats.jl")
 
 end
