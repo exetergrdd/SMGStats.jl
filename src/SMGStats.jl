@@ -17,15 +17,23 @@ using StatsBase
 
 using ImageFiltering
 
+using HypothesisTests
+
+
 export firestats, unicodeplot, displayplots, writeallstats, readstats, plotstat, htmlreport, statname, samplesummary,
-        ChromStat, ModCrossCor, ModHist, ModMetaHist, ModRate, NucMSPLenHist, NucMSPRate, ReadLengthCounter, MetaPlot, NucMonoDiRatio,
-        @smgstats, 
-        metaplot, loadregions,
-        loadmultichromintervals, loadstatconfig,
-        runstats,
-        combinereports,
-        modtable
-        
+    ChromStat, ModCrossCor, ModHist, ModMetaHist, ModRate, NucMSPLenHist, NucMSPRate, ReadLengthCounter, MetaPlot, NucMonoDiRatio,
+    @smgstats,
+    metaplot, loadregions,
+    loadmultichromintervals, loadstatconfig,
+    runstats,
+    combinereports,
+    modtable,
+    coaccess, coaccess_wrapper,
+    countfire, countfire_wrapper,
+    loadbed, bedintervals, buildintervalset,
+    differentialaccessibility,
+    smglog
+
 
 
 
@@ -52,5 +60,10 @@ include("report.jl")
 include("multireport.jl")
 include("main.jl")
 include("summarystats.jl")
+
+include("coaccess.jl")
+include("diff.jl")
+
+include("countfires.jl")
 
 end
