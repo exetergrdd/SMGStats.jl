@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Find the directory of this script, resolving symlinks
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symlink
+  DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE" # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+done
+DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+
+# The project root is one level up
+PROJECT_ROOT="$(dirname "$DIR")"
+
+# Use JULIA_CMD environment variable if set, otherwise default to "julia"
+JULIA=${JULIA_CMD:-julia}
+
+# Run Julia with the project environment active
+# We execute the `main` function (defined by @main in src/main.jl)
+# passing all command line arguments ("$@")
+exec "$JULIA" --project="$PROJECT_ROOT" -e 'using SMGStats; SMGStats.julia_main()' -- "$@"
