@@ -79,7 +79,7 @@ end
     (stat.firstintersection > stat.lastintersection ) && return nothing
     thresh = 0.9*255
     
-    genomepos = recorddata.alignmap[mod.pos]
+    genomepos = genomecoords(mod.pos, record, recorddata)
     if !iszero(genomepos)
         for ri in stat.firstintersection:stat.lastintersection
             ci = stat.cic.intervals[stat.tid][ri]
