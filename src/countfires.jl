@@ -47,6 +47,7 @@ function countfire(file, intervals::GenomicIntervalCollection{GenomicInterval{T}
 
     ### fireinteresctions is a buffer of those intervals each read intersects with
     fireintersections = VectorBuffer{GenomicInterval{T}}(fire_backing)
+    intersects = VectorBuffer{Bool}(fire_backing)
 
 
     fire_counts = zeros(Int(length(intervals)))
@@ -68,8 +69,9 @@ function countfire(file, intervals::GenomicIntervalCollection{GenomicInterval{T}
             read_counts[k] += 1
         end
         setlength!(fireintersections, fi)
-
-
+        setlength!(intersects, fi)
+        intersects .= false
+        ### ensure that each fire is only counted once per read
         for (s, l, q) in firemsps(record, recorddata)
             if q >= 0.9 * 255
                 genstart, genstop = genomecoords(s, l, record, recorddata)
@@ -77,11 +79,19 @@ function countfire(file, intervals::GenomicIntervalCollection{GenomicInterval{T}
 
                     @inbounds @simd for i = eachindex(fireintersections)
                         if (genstart <= fireintersections[i].last) && (genstop >= fireintersections[i].first)
-                            k = GenomicFeatures.metadata(fireintersections[i])
-                            fire_counts[k] += 1
+                            # k = GenomicFeatures.metadata(fireintersections[i])
+                            # fire_counts[k] += 1
+                            intersects[i] = true
                         end
                     end
                 end
+            end
+        end
+
+        for i = eachindex(intersects)
+            if intersects[i]
+                k = GenomicFeatures.metadata(fireintersections[i])
+                fire_counts[k] += 1
             end
         end
 
