@@ -29,17 +29,32 @@ function runstats(file, yaml; nr=-1, statdirfilename=false, outputdir="")
     banner()
     smglog("File                   : ", file)
 
-    ##### auto detect file details
-    htsdata = autodetecthtsdata(file)
+    ### this is all a bit unclean htsdata could be inferred from the auxmap
     auxmap = autodetectaux(file)
+
+    analysis, statset, config = loadstatconfig(yaml, auxmap)
+
+    ##### auto detect file details
+    # htsdata = autodetecthtsdata(file) 
+    if analysis == "stencilling"
+        htsdata = StencillingData
+    elseif analysis == "directrna"
+        htsdata = DirectRNA
+    else
+        error("unrecognised analysis: $analysis")
+    end
+
+    if auxmap isa AuxMapModFire
+        auxmap = AuxMapModFireQC()
+    end
+
     mods = autodetectmods(file)
     recorddata = htsdata(auxmap)
 
-    smglog("Detected Data Type     : ", htsdata)
+    smglog("Analysis               : ", htsdata)
     smglog("Detected Aux map       : ", typeof(auxmap))
     smglog("Detected Modifications : ", mods)
 
-    statset, config = loadstatconfig(yaml, auxmap)
     smglog("Config                 : ", yaml)
     smglog("Stats                  : ", replace(string(statset), "Tuple{" => "", "}" => ""))
     smglog("Outputdir              : ", statdir)
@@ -234,10 +249,10 @@ function julia_main()::Cint
         elseif method_str == "all"
             :all
         else
-            error("Unknown method: $method_str. Options: fisher, binomial_pooled, binomial_ref, alll")
+            error("Unknown method: $method_str. Options: fisher, binomial_pooled, binomial_ref, all")
         end
         
-        differentialaccessibility(opts["peaks"], opts["groupA"], opts["groupB"], opts["output"];
+        differentialaccessibility(opts["peaks"], string.(opts["groupA"]), string.(opts["groupB"]), opts["output"];
                      method=method_sym,
                      chromlabel=Symbol(opts["chrom"]),
                      startlabel=Symbol(opts["start"]),
