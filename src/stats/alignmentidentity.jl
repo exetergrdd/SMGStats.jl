@@ -14,6 +14,11 @@ instantiate(::Type{AlignmentIdentityHist}, config) = AlignmentIdentityHist()
 instantiate(::Type{AlignmentIdentityHist}, reader, mods) = AlignmentIdentityHist()
 statname(::Type{AlignmentIdentityHist}) = "Alignment Identity Histogram"
 
+
+compatible(::Type{AlignmentIdentityHist}, ::Type{AuxMapMod}) = false
+compatible(::Type{AlignmentIdentityHist}, ::Type{AuxMapModFire}) = false
+compatible(::Type{AlignmentIdentityHist}, ::Type{AuxMapModFiberTools}) = false
+
 @inline function updaterecord!(stat::AlignmentIdentityHist, record::BamRecord, recorddata)
     ai = alignmentidentity(record, recorddata)
     fit!(stat.stat, Float64(ai))
