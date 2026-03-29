@@ -25,6 +25,7 @@ function warncompatible(f, a)
 end
 function loadstatconfig(file, auxmap=nothing)
     yamlconfig = YAML.load_file(file)
+    analysis = yamlconfig["analysis"]
 
     stattypes = [getfield(SMGStats, Symbol(s)) for s in yamlconfig["stats"]]
     
@@ -35,5 +36,5 @@ function loadstatconfig(file, auxmap=nothing)
     
     config = NamedTuple(Symbol(k) => build_namedtuple(c) for (k, c) in yamlconfig["configs"])
 
-    stats, config
+    analysis, stats, config
 end
