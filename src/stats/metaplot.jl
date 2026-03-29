@@ -113,7 +113,7 @@ function writestats(stat::MetaPlot, path::String, file="metaplot.tsv.gz")
 
     mods = instances(Modification)
 
-    df = DataFrame(Region=String[], Mod=[], xp=Int[], FG=Int[], BG=Int[])
+    df = DataFrame(Region=String[], Mod=Modification[], xp=Int[], FG=Int[], BG=Int[])
 
     for i = 1:length(stat.cic.grouplabels)
         fg = stat.fg[i]
@@ -122,7 +122,7 @@ function writestats(stat::MetaPlot, path::String, file="metaplot.tsv.gz")
         dw = stat.cic.dw[i]
         xp = -dw:dw
 
-        mdf = mapreduce((f, b, m) -> DataFrame(Region=stat.cic.grouplabels[i], Mod=m, xp=xp, FG=f, BG=b), vcat, eachcol(fg[:, modind]), eachcol(bg[:, modind]), mods[modind])
+        mdf = mapreduce((f, b, m) -> DataFrame(Region=stat.cic.grouplabels[i], Mod=m, xp=xp, FG=f, BG=b), vcat, eachcol(fg[:, modind]), eachcol(bg[:, modind]), mods[modind], init=DataFrame(Region=String[], Mod=Modification[], xp=Int[], FG=Int[], BG=Int[]))
         append!(df, mdf)
     end
 
@@ -132,12 +132,40 @@ function plotstat(::Type{MetaPlot}, df::DataFrame)
     # f = Figure()
     # ax = Axis(f[1, 1], xgridvisible=false, ygridvisible=false, ylabel="Correlation")
 
-    df.R = df.FG./df.BG
+    df.Rate = df.FG./df.BG
+    transform!(groupby(df, [:Region, :Mod]), :Rate => (x -> (x .- mean(x))/std(x)) => :zscore)
 
-    transform!(groupby(df, [:Region, :Mod]), :R => (x -> (x .- mean(x))/std(x)) => :R)
+    ### separate by regions that are motifs for footprinting
+    regions = df[.!occursin.("motif", df.Region), :]
+    motifs  = df[  occursin.("motif", df.Region), :]
+
     # df.Label = string.(replace.(df.ModA, "mod_" => ""), "\n", replace.(df.ModB, "mod_" => ""))
 
-    plt = data(df) * mapping(:xp, :R, color=:Mod) * mapping(col=:Mod, row=:Region) * (visual(Scatter, alpha=0.1, marker=:vline) + smooth(span=0.05, degree=4, npoints=3000))
-    f = draw(plt; figure=(; size=(1000, 500)), legend=(; position=:bottom))
+
+    f = Figure(size=(1000, 5*275))
+
+    plt = data(regions) * mapping(:xp, :zscore, color=:Mod) * mapping(col=:Mod, row=:Region) * (visual(Scatter, alpha=0.1, marker=:vline) + smooth(span=0.05, degree=4, npoints=3000))
+    draw!(f[1, 1:2], plt, axis= (; xgridvisible=false, ygridvisible=false), facet=(; linkyaxes=true))
+
+    plt = data(regions) * mapping(:xp, :Rate, color=:Mod) * mapping(col=:Mod, row=:Region) * (visual(Scatter, alpha=0.1, marker=:vline) + smooth(span=0.05, degree=4, npoints=3000))
+    draw!(f[2, 1:2], plt, axis= (; xgridvisible=false, ygridvisible=false), facet=(; linkyaxes=true))
+
+    k = 3
+    for rdf in groupby(motifs, :Region)
+        for mdf in groupby(rdf, :Mod)
+            @show rdf.Region[1], mdf.Mod[1], k, k-2
+
+            ax = Axis(f[k, 1], title=string(mdf.Mod[1]), xlabel=mdf.Region[1])
+            barplot!(mdf.xp, mdf.Rate)
+            ax = Axis(f[k, 2], title="Footprint", xlabel=mdf.Region[1])
+            barplot!(mdf.xp, mdf.Rate)
+            xlims!(ax, -50, 50)
+
+            vlines!(ax, [-7, 7], color=:black)
+            k += 1
+        end
+    end
+    colsize!(f.layout, 2, Auto(.5))
+    
     f
 end
