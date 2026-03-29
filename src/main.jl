@@ -28,6 +28,7 @@ function runstats(file, yaml; nr=-1, statdirfilename=false, outputdir="")
     #### print banner
     banner()
     smglog("File                   : ", file)
+    smglog("YAML                   : ", yaml)
 
     ### this is all a bit unclean htsdata could be inferred from the auxmap
     auxmap = autodetectaux(file)
