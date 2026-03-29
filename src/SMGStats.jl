@@ -6,6 +6,7 @@ using AlgebraOfGraphics
 using CSV
 using CairoMakie
 using ColorSchemes
+using CodecZlib
 using DataFrames
 using Dates
 using GenomicFeatures
@@ -29,8 +30,8 @@ export firestats, unicodeplot, displayplots, writeallstats, readstats, plotstat,
     combinereports,
     modtable,
     coaccess, coaccess_wrapper,
-    countfire, countfire_wrapper,
-    loadbed, bedintervals, buildintervalset,
+    countfire, countfire_wrapper, countfire_sweep,
+    loadbed, bedintervals, buildintervalset, bedchromintervals, buildchromintervalset,
     differentialaccessibility,
     smglog
 
@@ -65,5 +66,6 @@ include("coaccess.jl")
 include("diff.jl")
 
 include("countfires.jl")
+include("countfires_sweep.jl")
 
 end
