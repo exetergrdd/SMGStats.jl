@@ -76,7 +76,12 @@ end
 
 
 function bedhasheader(bedfile)
-    io = open(bedfile)
+
+    if endswith(bedfile, ".gz")
+        io = open(bedfile) |> GzipDecompressorStream
+    else
+        io = open(bedfile)
+    end
     hasheader = false
     while !eof(io)
         line = readline(io)
@@ -110,7 +115,7 @@ A `DataFrame` containing the BED file data.
 function loadbed(bedfile)
     if bedhasheader(bedfile)
         bdf = CSV.read(bedfile, DataFrame)
-        # normalize typical chrom header variants
+        # normalise typical chrom header variants
         rename!(bdf, replace.(names(bdf), "#chrom" => "chrom"))
     else
         bdf = CSV.read(bedfile, DataFrame, header=false)
@@ -121,7 +126,6 @@ function loadbed(bedfile)
             bdf[!, :name] = string.(replace(basename(bedfile), ".bed" => ""), "_", 1:size(bdf, 1))
         end
     end
-
     bdf
 end
 
@@ -174,4 +178,53 @@ function buildintervalset(intervalfile, label="", chromlabel=:chrom, startlabel=
     # If file has header with specific names, they used to be passed here.
 
     bedintervals(df, chromlabel=chromlabel, startlabel=startlabel, stoplabel=stoplabel)
+end
+
+
+"""
+    bedchromintervals(bdf; chromlabel=:chrom, startlabel=:start, stoplabel=:stop, strandlabel=:strand)
+
+Converts a DataFrame of BED data (from `loadbed`) into a `ChromIntervalCollection`.
+Uses `ChromInterval` structure.
+"""
+function bedchromintervals(bdf; chromlabel=:chrom, startlabel=:start, stoplabel=:stop, strandlabel=:strand)
+    for col in [chromlabel, startlabel, stoplabel]
+        if col ∉ propertynames(bdf)
+            error("Column :$col not found in DataFrame. Available columns: $(propertynames(bdf))")
+        end
+    end
+
+    sort!(bdf, [chromlabel, startlabel, stoplabel])
+
+    regions = Dict{String,Vector{ChromInterval}}()
+    
+    # Handle strand
+    strands = if strandlabel ∈ propertynames(bdf)
+        bdf[!, strandlabel]
+    else
+        fill("+", size(bdf, 1))
+    end
+    
+    for (i, (c, s, e, str)) in enumerate(zip(bdf[!, chromlabel], bdf[!, startlabel], bdf[!, stoplabel], strands))
+        cs = String(c)
+        if !haskey(regions, cs)
+            regions[cs] = ChromInterval[]
+        end
+        # Use simple 1-based indexing for regionindex (i)
+        # strand: "+" -> true, else false
+        push!(regions[cs], ChromInterval(s, e, str == "+" || str == true, i, 1))
+    end
+
+    ChromIntervalCollection(regions, 1, ["regions"], Int[])
+end
+
+
+"""
+    buildchromintervalset(intervalfile; chromlabel=:chrom, startlabel=:start, stoplabel=:stop)
+
+Wrapper for `loadbed` and `bedchromintervals`.
+"""
+function buildchromintervalset(intervalfile; chromlabel=:chrom, startlabel=:start, stoplabel=:stop)
+    df = loadbed(intervalfile)
+    bedchromintervals(df, chromlabel=chromlabel, startlabel=startlabel, stoplabel=stoplabel)
 end
