@@ -25,7 +25,7 @@ function updatecontigency(c, fA, fB)
 end
 
 
-function coaccess(file, intervals::GenomicIntervalCollection{GenomicInterval{T}}; total_reads=1000, fire_backing=5_000) where T
+function coaccess(file, intervals::GenomicIntervalCollection{GenomicInterval{T}}; total_reads=-1, fire_backing=5_000, readoffset=25) where T
 
     reader = open(HTSFileReader, file)
     recorddata = StencillingData(AuxMapModFire())
@@ -41,13 +41,20 @@ function coaccess(file, intervals::GenomicIntervalCollection{GenomicInterval{T}}
     for record in eachrecord(reader)
         validflag(record) || continue
         processread!(record, recorddata) || continue
+
         ref = refname(reader, record)
-        readinterval = GenomicInterval(ref, SMGReader.leftposition(record) + 1, SMGReader.rightposition(recorddata)) ## convert to 1-based inclusive
+        ## readoffset ensures that the any intersection is not in a the extremes of a read
+        readinterval = GenomicInterval(ref, SMGReader.leftposition(record) + 1  + readoffset, SMGReader.rightposition(recorddata) - readoffset) ## convert to 1-based inclusive
+        (readinterval.last > readinterval.first) || continue
+            
         fi = 0
         setlength!(fireintersections, length(fireintersections.data))
         for fiv in eachoverlap(intervals, readinterval)
-            fi += 1
-            fireintersections[fi] = fiv
+            ### ensure fire peak is entirely contained in read interval
+            if (readinterval.first < fiv.first) && (fiv.last < readinterval.last)
+                fi += 1
+                fireintersections[fi] = fiv
+            end
         end
         setlength!(fireintersections, fi)
         setlength!(intersects, fi)
@@ -57,7 +64,6 @@ function coaccess(file, intervals::GenomicIntervalCollection{GenomicInterval{T}}
             if q >= 0.9 * 255
                 genstart, genstop = genomecoords(s, l, record, recorddata) ### this could be improved if s+l lands in a coord that doesn't map this doesn't search back for a match
                 if !iszero(genstart) && !iszero(genstop)
-                    # giv = genstart:genstop
                     @inbounds @simd for i = eachindex(fireintersections)
                         intersects[i] |= (genstart <= fireintersections[i].last) && (genstop >= fireintersections[i].first)
                     end
@@ -115,9 +121,9 @@ function coaccessfisher(codf, n_thresh=10)
     df
 end
 ###
-catcoaccess(dfs) = combine(groupby(reduce(vcat, dfs), [:chromA, :startA, :stopA, :chromB, :startB, :stopB]), :a => sum => :a, :b => sum => :b, c => :c, :d => :d)
+catcoaccess(dfs; df=reduce(vcat, dfs)) = combine(groupby(df, [:chromA, :startA, :stopA, :chromB, :startB, :stopB]),
+ :a => sum => :a, :b => sum => :b, :c => sum => :c, :d => sum => :d, :Total => sum => :Total)
 
-# cat /Users/ndlo201/julia/dev/SMGStats/.vscode/settings.json
 
 """
     coaccess_wrapper(files, peakfile, output; chromlabel=:chrom, startlabel=:start, stoplabel=:stop)
@@ -125,7 +131,7 @@ catcoaccess(dfs) = combine(groupby(reduce(vcat, dfs), [:chromA, :startA, :stopA,
 Evaluates coaccessibility for a set of BAM files against a set of peaks.
 Combines results and writes to output.
 """
-function coaccess_wrapper(files::Vector{String}, peakfile::String, output::String; chromlabel=:chrom, startlabel=:start, stoplabel=:stop, n_thresh=10, calcfisher=true)
+function coaccess_wrapper(files, peakfile::String, output::String; chromlabel=:chrom, startlabel=:start, stoplabel=:stop, n_thresh=10, calcfisher=true)
 
     # Load intervals using robust loadbed -> bedintervals pipeline
     bdf = loadbed(peakfile)
@@ -138,14 +144,14 @@ function coaccess_wrapper(files::Vector{String}, peakfile::String, output::Strin
         smglog("Processing coaccessibility for: $file")
         # Assuming coaccess returns a Dict
         cod = coaccess(file, intervals)
+
         # Convert to DataFrame
         df = coaccessdf(cod, false)
         push!(dfs, df)
-    end
+    end 
 
 
     combineddf = catcoaccess(dfs)
-
     if calcfisher
         combineddf = coaccessfisher(combineddf, n_thresh)
     end
@@ -157,4 +163,3 @@ function coaccess_wrapper(files::Vector{String}, peakfile::String, output::Strin
         CSV.write(output, combineddf, delim='\t')
     end
 end
-
