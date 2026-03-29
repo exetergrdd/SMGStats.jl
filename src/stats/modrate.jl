@@ -60,27 +60,27 @@ function writestats(stat::ModRate, path::String, file="modrate.tsv.gz")
     CSV.write(filepath, statdf(stat), delim='\t', compress=endswith(file, ".gz"))
 end
 
-function plotstat(::Type{ModRate}, df::DataFrame, scale=1, smooth_sig=10, axis_thresh=0.99)
+function plotstat(::Type{ModRate}, df::DataFrame, scale=1, smooth_sig=10, axis_thresh=0.99999)
     transform!(groupby(df, :mod), :count => (c -> c/sum(c)) => :proportion)
     transform!(groupby(df, :mod), :proportion => cumsum => :cumsum, :proportion => (x -> kernelsmooth(x, smooth_sig)) => :smoothprop)
 
     n = length(unique(df.mod))
-    xlt = combine(groupby(df[df.cumsum .> axis_thresh, :], :mod), df -> df[argmin(df.cumsum), :]).rate |> maximum
+    xlt = combine(groupby(df[df.cumsum .>= axis_thresh, :], :mod), df -> df[argmin(df.cumsum), :]).rate |> maximum
 
-    f  = Figure(size=(1000, 500))
+    f  = Figure(size=(1000, 750))
     #### viobox
-    ax = Axis(f[1:2, 1:n], xgridvisible=false, ygridvisible=false, ylabel="mod/bp")
+    ax = Axis(f[1, 1:n], xgridvisible=false, ygridvisible=false, ylabel="mod/bp")
     vioboxdist!(df, :mod, :rate, :proportion)
     ylims!(0, xlt)
 
     ### per mod dist
     
     plt = data(df) * mapping(:rate, direct(0), :smoothprop, color=:mod) * mapping(col=:mod) * visual(Band)
-    draw!(f[1, (1:n) .+ n], plt, axis= (; xgridvisible=false, ygridvisible=false))
+    draw!(f[2, (1:2*n)], plt, axis= (; xgridvisible=false, ygridvisible=false), facet=(; linkyaxes=false))
     xlims!(0, xlt)
     plt_overlay = data(df) * ((mapping(:rate, direct(0), :smoothprop, color=:mod) * visual(Band, alpha=0.5)) +  
                               (mapping(:rate, :smoothprop, color=:mod) * visual(Lines))) 
-    ag = draw!(f[2, (1:n) .+ n], plt_overlay, axis=(; xlabel="mod/bp", xgridvisible=false, ygridvisible=false))
+    ag = draw!(f[1, (1:n) .+ n], plt_overlay, axis=(; xlabel="mod/bp", xgridvisible=false, ygridvisible=false))
     legend!(f[1:2, 2*n + 1], ag)
     xlims!(0, xlt)
     f
