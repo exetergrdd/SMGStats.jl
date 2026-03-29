@@ -51,6 +51,8 @@ include("readlengthcounter.jl")
 include("modcrosscor.jl")
 include("metaplot.jl")
 include("nuc_mono_di.jl")
+include("qscore.jl")
+include("alignmentidentity.jl")
 
 # isrecordstat(x) = true
 
@@ -140,7 +142,7 @@ end
 
 function firestats(file, stattypes::Type{<:Tuple}; nr=100_000, config=(;), filtfun=validflag)
     reader = open(HTSFileReader, file)
-    recorddata = StencillingData(AuxMapModFire())
+    recorddata = StencillingData(AuxMapModFireQC())
     mods = (mod_5mC, mod_5hmC, mod_6mA)
 
     fullconfig = (; reader, mods, config...)
