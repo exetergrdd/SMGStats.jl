@@ -33,6 +33,9 @@ function runstats(file, yaml; nr=-1, statdirfilename=false, outputdir="")
     ### this is all a bit unclean htsdata could be inferred from the auxmap
     auxmap = autodetectaux(file)
 
+    if auxmap isa AuxMapModFire
+        auxmap = AuxMapModFireQC()
+    end
     analysis, statset, config = loadstatconfig(yaml, auxmap)
 
     ##### auto detect file details
@@ -45,9 +48,7 @@ function runstats(file, yaml; nr=-1, statdirfilename=false, outputdir="")
         error("unrecognised analysis: $analysis")
     end
 
-    if auxmap isa AuxMapModFire
-        auxmap = AuxMapModFireQC()
-    end
+ 
 
     mods = autodetectmods(file)
     recorddata = htsdata(auxmap)
