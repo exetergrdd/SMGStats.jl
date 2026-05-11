@@ -254,7 +254,7 @@ function julia_main()::Cint
             error("Unknown method: $method_str. Options: fisher, binomial_pooled, binomial_ref, all")
         end
         
-        differentialaccessibility(opts["peaks"], string.(opts["groupA"]), string.(opts["groupB"]), opts["output"];
+        differentialaccessibility_mod_fire(opts["peaks"], string.(opts["groupA"]), string.(opts["groupB"]), opts["output"];
                      method=method_sym,
                      chromlabel=Symbol(opts["chrom"]),
                      startlabel=Symbol(opts["start"]),
