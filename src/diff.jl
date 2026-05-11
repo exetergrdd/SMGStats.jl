@@ -15,6 +15,22 @@
         return total_fire, total_read
     end
 
+function sum_fire_mod_counts(files, interval_set, label_prefix)
+
+    fields = [:fire, :mod_6mA, :mod_5mC, :mod_5hmC]
+    fg_counts = Dict(f => zeros(Int, length(interval_set)) for f in fields)
+    total_counts = Dict(f => zeros(Int, length(interval_set)) for f in fields)
+    for f in files
+        smglog("Processing $label_prefix: $f")
+        fg, tot = countfiremods(f, interval_set)
+        for key in fields
+            fg_counts[key] .+= fg[key]
+            total_counts[key] .+= tot[key]
+        end
+    end
+    return fg_counts, total_counts
+end
+
 
 
 function fisher(a, b, c, d)
@@ -131,6 +147,97 @@ function differentialaccessibility(bedfile::String, bamsA, bamsB, output::String
         bdf.binref_rpv = [bt.rpv for bt in bts]
 
     end
+
+    
+    # Write output
+    smglog("Writing differential analysis results to: $output")
+    if endswith(output, ".gz")
+        CSV.write(output, bdf, delim='\t', compress=true)
+    else
+        CSV.write(output, bdf, delim='\t')
+    end
+end
+
+
+
+"""
+    differentialaccessibility_mod_fire(bedfile, bamsA, bamsB, output; method=:fisher, chromlabel=:chrom, startlabel=:start, stoplabel=:stop)
+
+Performs differential accessibility analysis between two groups of BAM files (A and B).
+Counts fires and reads for all files, pools them by group, and calculates p-values.
+
+# Arguments
+- `bedfile`: Path to peaks BED file.
+- `bamsA`: Vector of BAM files for Group A (Control).
+- `bamsB`: Vector of BAM files for Group B (Treatment).
+- `output`: Output filename.
+- `method`: Statistical method (`:fisher`, `:binomial_pooled`, `:binomial_ref`, `:alll`).
+"""
+function differentialaccessibility_mod_fire(bedfile::String, bamsA, bamsB, output::String; method=:fisher, chromlabel=:chrom, startlabel=:start, stoplabel=:stop)
+
+    smglog("               Differential Modification Analysis")
+    smglog("Group A:      ", bamsA)
+    smglog("Group B:      ", bamsB)
+    smglog("Output:       ", output)
+    smglog("Method:       ", method)
+    # Load peaks
+    bdf = loadbed(bedfile)
+    intervals = bedintervals(bdf; chromlabel=Symbol(chromlabel), startlabel=Symbol(startlabel), stoplabel=Symbol(stoplabel))
+    smglog("Loaded $(length(intervals)) intervals for differential analysis")
+
+
+
+    # Process Group A
+    smglog("Counting fires and mods for Group A ($(length(bamsA)) files)...")
+    fgA, totA = sum_fire_mod_counts(bamsA, intervals, "Group A")
+
+    # Process Group B
+    smglog("Counting fires and mods for Group B ($(length(bamsB)) files)...")
+    fgB, totB = sum_fire_mod_counts(bamsB, intervals, "Group B")
+    
+    # Construct Results DataFrame
+    fields = [:mod_6mA, :mod_5mC, :mod_5hmC]
+
+    for field in fields
+        bdf[Symbol(string(field), "_count_A")] = fgA[field]
+        bdf[Symbol(string(field), "_count_B")] = fgB[field]
+
+        bdf[Symbol(string(field), "_total_A")] = totA[field]
+        bdf[Symbol(string(field), "_total_B")] = totB[field]
+    end
+    
+    # Perform Stats
+    smglog("Calculating statistics using method: $method")
+    
+    
+    
+    if method == :fisher || method == :all
+        # Fisher's Exact Test
+        # Table:
+        #           Fire    NoFire
+        # Group A   Fa      Ra - Fa
+        # Group B   Fb      Rb - Fb
+
+        for field in fields
+            countA = fgA[field]
+            totalA = totA[field]
+            countB = fgB[field]
+            totalB = totB[field]
+
+            fts = [fisher(countA[i], totalA[i] - countA[i], countB[i], totalB[i] - countB[i]) for i in 1:length(intervals)]
+            bdf[Symbol(string(field), "_a")] = countA
+            bdf[Symbol(string(field), "_b")] = totalA .- countA
+            bdf[Symbol(string(field), "_c")] = countB
+            bdf[Symbol(string(field), "_d")] = totalB .- countB
+            bdf[Symbol(string(field), "_or")] = [f.or  for f in fts]
+            bdf[Symbol(string(field), "_logor_se")] = [f.logor_se  for f in fts]
+            bdf[Symbol(string(field), "_lpv")] = [f.fisher_lpv  for f in fts]
+            bdf[Symbol(string(field), "_fpv")] = [f.fisher_rpv  for f in fts]
+            bdf[Symbol(string(field), "_bpv")] = [f.fisher_bpv  for f in fts]
+        end
+
+    end
+        
 
     
     # Write output
