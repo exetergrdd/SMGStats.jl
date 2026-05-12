@@ -219,7 +219,7 @@ function countfiremods(file, intervals::GenomicIntervalCollection{GenomicInterva
         for mi in ModIterator(record, recorddata)
             
             genomepos = genomecoords(mi.pos, record, recorddata)
-            
+
             @inbounds @simd for i = eachindex(fireintersections)
                 if (genomepos <= fireintersections[i].last) && (genomepos >= fireintersections[i].first)
                     k = GenomicFeatures.metadata(fireintersections[i])
