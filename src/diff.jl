@@ -175,7 +175,7 @@ Counts fires and reads for all files, pools them by group, and calculates p-valu
 """
 function differentialaccessibility_mod_fire(bedfile::String, bamsA, bamsB, output::String; method=:fisher, chromlabel=:chrom, startlabel=:start, stoplabel=:stop)
 
-    smglog("               Differential Modification Analysis")
+    smglog("               Differential Modification Analysis on fire elements and modifications")
     smglog("Group A:      ", bamsA)
     smglog("Group B:      ", bamsB)
     smglog("Output:       ", output)
@@ -196,14 +196,14 @@ function differentialaccessibility_mod_fire(bedfile::String, bamsA, bamsB, outpu
     fgB, totB = sum_fire_mod_counts(bamsB, intervals, "Group B")
     
     # Construct Results DataFrame
-    fields = [:mod_6mA, :mod_5mC, :mod_5hmC]
+    fields = [:fire, :mod_6mA, :mod_5mC, :mod_5hmC]
+    labels = replace.(string.(fields), "_" => "")
 
-    for field in fields
-        bdf[Symbol(string(field), "_count_A")] = fgA[field]
-        bdf[Symbol(string(field), "_count_B")] = fgB[field]
-
-        bdf[Symbol(string(field), "_total_A")] = totA[field]
-        bdf[Symbol(string(field), "_total_B")] = totB[field]
+    for (field, label) in zip(fields, labels)
+        bdf[!, Symbol(label, "_countA")] .= fgA[field]
+        bdf[!, Symbol(label, "_countB")] .= fgB[field]
+        bdf[!, Symbol(label, "_totalA")] .= totA[field]
+        bdf[!, Symbol(label, "_totalB")] .= totB[field]
     end
     
     # Perform Stats
@@ -218,22 +218,22 @@ function differentialaccessibility_mod_fire(bedfile::String, bamsA, bamsB, outpu
         # Group A   Fa      Ra - Fa
         # Group B   Fb      Rb - Fb
 
-        for field in fields
+        for (field, label) in zip(fields, labels)
             countA = fgA[field]
             totalA = totA[field]
             countB = fgB[field]
             totalB = totB[field]
 
             fts = [fisher(countA[i], totalA[i] - countA[i], countB[i], totalB[i] - countB[i]) for i in 1:length(intervals)]
-            bdf[Symbol(string(field), "_a")] = countA
-            bdf[Symbol(string(field), "_b")] = totalA .- countA
-            bdf[Symbol(string(field), "_c")] = countB
-            bdf[Symbol(string(field), "_d")] = totalB .- countB
-            bdf[Symbol(string(field), "_or")] = [f.or  for f in fts]
-            bdf[Symbol(string(field), "_logor_se")] = [f.logor_se  for f in fts]
-            bdf[Symbol(string(field), "_lpv")] = [f.fisher_lpv  for f in fts]
-            bdf[Symbol(string(field), "_fpv")] = [f.fisher_rpv  for f in fts]
-            bdf[Symbol(string(field), "_bpv")] = [f.fisher_bpv  for f in fts]
+            bdf[!, Symbol(label, "_contingency_a")] = countA
+            bdf[!, Symbol(label, "_contingency_b")] = totalA .- countA
+            bdf[!, Symbol(label, "_contingency_c")] = countB
+            bdf[!, Symbol(label, "_contingency_d")] = totalB .- countB
+            bdf[!, Symbol(label, "_or")] = [f.or  for f in fts]
+            bdf[!, Symbol(label, "_logor_se")] = [f.logor_se  for f in fts]
+            bdf[!, Symbol(label, "_fisher_lpv")] = [f.fisher_lpv  for f in fts]
+            bdf[!, Symbol(label, "_fisher_rpv")] = [f.fisher_rpv  for f in fts]
+            bdf[!, Symbol(label, "_fisher_bpv")] = [f.fisher_bpv  for f in fts]
         end
 
     end
