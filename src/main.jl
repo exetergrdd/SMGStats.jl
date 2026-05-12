@@ -119,6 +119,7 @@ function parse_commandline()
         "diff"
             action = :command
             help = "Run differential accessibility analysis"
+
     end
 
     @add_arg_table! s["stats"] begin
@@ -204,6 +205,9 @@ function parse_commandline()
         "--stop"
             help = "Stop column name"
             default = "stop"
+        "--mods"
+            help = "Calculate total differential 6mA, 5mC, 5hmC modification over peak regions"
+            action = :store_true
     end
 
     return parse_args(s)
@@ -254,7 +258,13 @@ function julia_main()::Cint
             error("Unknown method: $method_str. Options: fisher, binomial_pooled, binomial_ref, all")
         end
         
-        differentialaccessibility_mod_fire(opts["peaks"], string.(opts["groupA"]), string.(opts["groupB"]), opts["output"];
+        if opts["mods"]
+            difffun = differentialaccessibility_mod_fire
+        else
+            difffun = differentialaccessibility
+        end
+        
+        difffun(opts["peaks"], string.(opts["groupA"]), string.(opts["groupB"]), opts["output"];
                      method=method_sym,
                      chromlabel=Symbol(opts["chrom"]),
                      startlabel=Symbol(opts["start"]),
