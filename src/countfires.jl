@@ -166,7 +166,7 @@ end
 
 
 
-function countfiremods(file, intervals::GenomicIntervalCollection{GenomicInterval{T}}; total_reads=-1, fire_backing=5_000) where T
+function countfiremods(file, intervals::GenomicIntervalCollection{GenomicInterval{T}}; total_reads=-1, fire_backing=5_000, filthap=nothing) where T
 
     reader = open(HTSFileReader, file)
     recorddata = StencillingData(AuxMapModFire())
@@ -185,6 +185,7 @@ function countfiremods(file, intervals::GenomicIntervalCollection{GenomicInterva
     for record in eachrecord(reader)
         validflag(record) || continue
         processread!(record, recorddata) || continue
+        !isnothing(filthap) && (haplotype(record, recorddata, 0x00) != filthap) && continue
 
         ref = refname(reader, record)
         readinterval = GenomicInterval(ref, SMGReader.leftposition(record) + 1, SMGReader.rightposition(recorddata)) ## convert to 1-based inclusive

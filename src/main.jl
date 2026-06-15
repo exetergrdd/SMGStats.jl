@@ -192,7 +192,7 @@ function parse_commandline()
         "--groupB", "-b"
             help = "Group B BAM files"
             nargs = '+'
-            required = true
+            required = false ### necessary apart from differential haplotype analysis
         "--method", "-m"
             help = "Statistical method: fisher, binomial_pooled, binomial_ref, all"
             default = "all"
@@ -207,6 +207,9 @@ function parse_commandline()
             default = "stop"
         "--mods"
             help = "Calculate total differential 6mA, 5mC, 5hmC modification over peak regions"
+            action = :store_true
+        "--hap"
+            help = "Perform differential haplotype analysis on Group A files"
             action = :store_true
     end
 
@@ -258,17 +261,22 @@ function julia_main()::Cint
             error("Unknown method: $method_str. Options: fisher, binomial_pooled, binomial_ref, all")
         end
         
-        if opts["mods"]
-            difffun = differentialaccessibility_mod_fire
-        else
-            difffun = differentialaccessibility
-        end
+        bamsB_arg = isnothing(opts["groupB"]) ? String[] : string.(opts["groupB"])
         
-        difffun(opts["peaks"], string.(opts["groupA"]), string.(opts["groupB"]), opts["output"];
+        if opts["mods"]
+            differentialaccessibility_mod_fire(opts["peaks"], string.(opts["groupA"]), bamsB_arg, opts["output"];
+                     diff_by_hap=opts["hap"],
                      method=method_sym,
                      chromlabel=Symbol(opts["chrom"]),
                      startlabel=Symbol(opts["start"]),
                      stoplabel=Symbol(opts["stop"]))
+        else
+            differentialaccessibility(opts["peaks"], string.(opts["groupA"]), bamsB_arg, opts["output"];
+                     method=method_sym,
+                     chromlabel=Symbol(opts["chrom"]),
+                     startlabel=Symbol(opts["start"]),
+                     stoplabel=Symbol(opts["stop"]))
+        end
     end
 
     return 0

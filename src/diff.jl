@@ -15,14 +15,14 @@
         return total_fire, total_read
     end
 
-function sum_fire_mod_counts(files, interval_set, label_prefix)
+function sum_fire_mod_counts(files, interval_set, label_prefix; filthap=nothing)
 
     fields = [:fire, :mod_6mA, :mod_5mC, :mod_5hmC]
     fg_counts = Dict(f => zeros(Int, length(interval_set)) for f in fields)
     total_counts = Dict(f => zeros(Int, length(interval_set)) for f in fields)
     for f in files
         smglog("Processing $label_prefix: $f")
-        fg, tot = countfiremods(f, interval_set)
+        fg, tot = countfiremods(f, interval_set; filthap=filthap)
         for key in fields
             fg_counts[key] .+= fg[key]
             total_counts[key] .+= tot[key]
@@ -173,7 +173,7 @@ Counts fires and reads for all files, pools them by group, and calculates p-valu
 - `output`: Output filename.
 - `method`: Statistical method (`:fisher`, `:binomial_pooled`, `:binomial_ref`, `:alll`).
 """
-function differentialaccessibility_mod_fire(bedfile::String, bamsA, bamsB, output::String; method=:fisher, chromlabel=:chrom, startlabel=:start, stoplabel=:stop)
+function differentialaccessibility_mod_fire(bedfile::String, bamsA, bamsB, output::String; diff_by_hap=false, method=:fisher, chromlabel=:chrom, startlabel=:start, stoplabel=:stop)
 
     smglog("               Differential Modification Analysis on fire elements and modifications")
     smglog("Group A:      ", bamsA)
@@ -187,13 +187,23 @@ function differentialaccessibility_mod_fire(bedfile::String, bamsA, bamsB, outpu
 
 
 
-    # Process Group A
-    smglog("Counting fires and mods for Group A ($(length(bamsA)) files)...")
-    fgA, totA = sum_fire_mod_counts(bamsA, intervals, "Group A")
 
-    # Process Group B
-    smglog("Counting fires and mods for Group B ($(length(bamsB)) files)...")
-    fgB, totB = sum_fire_mod_counts(bamsB, intervals, "Group B")
+    if diff_by_hap
+        ### calculate hap diff on bamsA, ignore bamsB
+        smglog("Counting fires and mods for Haplotype 1 ($(length(bamsA)) files)...")
+        fgA, totA = sum_fire_mod_counts(bamsA, intervals, "Group A", filthap=0x01)
+        smglog("Counting fires and mods for Haplotype 2 ($(length(bamsA)) files)...")
+        fgB, totB = sum_fire_mod_counts(bamsA, intervals, "Group A", filthap=0x02)
+
+    else
+        # Process Group A
+        smglog("Counting fires and mods for Group A ($(length(bamsA)) files)...")
+        fgA, totA = sum_fire_mod_counts(bamsA, intervals, "Group A")
+
+        # Process Group B
+        smglog("Counting fires and mods for Group B ($(length(bamsB)) files)...")
+        fgB, totB = sum_fire_mod_counts(bamsB, intervals, "Group B")
+    end
     
     # Construct Results DataFrame
     fields = [:fire, :mod_6mA, :mod_5mC, :mod_5hmC]
