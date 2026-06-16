@@ -17,7 +17,7 @@ statname(::Type{AlignmentIdentityHist}) = "Alignment Identity Histogram"
 
 compatible(::Type{AlignmentIdentityHist}, ::Type{AuxMapMod}) = false
 compatible(::Type{AlignmentIdentityHist}, ::Type{AuxMapModFire}) = false
-compatible(::Type{AlignmentIdentityHist}, ::Type{AuxMapModFiberTools}) = false
+# compatible(::Type{AlignmentIdentityHist}, ::Type{AuxMapModFiberTools}) = false
 
 @inline function updaterecord!(stat::AlignmentIdentityHist, record::BamRecord, recorddata)
     ai = alignmentidentity(record, recorddata)
