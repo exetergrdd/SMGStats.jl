@@ -16,7 +16,7 @@ statname(::Type{QscoreHist}) = "Mean Qscore Histogram"
 
 compatible(::Type{QscoreHist}, ::Type{AuxMapMod}) = false
 compatible(::Type{QscoreHist}, ::Type{AuxMapModFire}) = false
-compatible(::Type{QscoreHist}, ::Type{AuxMapModFiberTools}) = false
+# compatible(::Type{QscoreHist}, ::Type{AuxMapModFiberTools}) = false
 
 @inline function updaterecord!(stat::QscoreHist, record::BamRecord, recorddata)
     qs = basecallqscore(record, recorddata)
