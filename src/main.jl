@@ -380,7 +380,7 @@ function julia_main()::Cint
         ks = parse_ranges(opts["ks"])
         linkage_sym = Symbol(opts["linkage"])
         
-        cluster_peaks(opts["peaks"], opts["files"], opts["output"];
+        cluster_peaks(opts["peaks"], string.(opts["files"]), opts["output"];
             dw=opts["dw"],
             features=features,
             dx=opts["dx"],
