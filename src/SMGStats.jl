@@ -22,6 +22,8 @@ using JLD2
 using ImageFiltering
 
 using HypothesisTests
+using Clustering
+using Distances
 
 
 export firestats, unicodeplot, displayplots, writeallstats, readstats, readmultistats, plotstat, plotmultistat, htmlreport, htmlmultireport, statname, samplesummary,
