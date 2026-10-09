@@ -119,7 +119,9 @@ function parse_commandline()
         "diff"
             action = :command
             help = "Run differential accessibility analysis"
-
+        "cluster"
+            action = :command
+            help = "Run stencil clustering on genomic regions"
     end
 
     @add_arg_table! s["stats"] begin
@@ -213,7 +215,102 @@ function parse_commandline()
             action = :store_true
     end
 
+    @add_arg_table! s["cluster"] begin
+        "--peaks", "-p"
+            help = "Peaks BED file"
+            required = true
+        "--output", "-o"
+            help = "Output directory"
+            required = true
+        "--dw"
+            help = "Window around peak to include (bp)"
+            arg_type = Int
+            default = 600
+        "--features", "-f"
+            help = "Comma separated list of features to cluster (e.g. fire,mod_6mA,mod_5mC,mod_5hmC)"
+            default = "fire,mod_6mA"
+        "--dx"
+            help = "Spatial binning resolution (bp)"
+            arg_type = Int
+            default = 15
+        "--smooth_sigma"
+            help = "Gaussian smoothing sigma for the feature matrix"
+            arg_type = Float64
+            default = 0.0
+        "--strictfirefeatures"
+            help = "Number of bp that a read's FIRE features must exceed the cluster region, set to >= 1 ensures reads are annotated over cluster region"
+            arg_type = Int
+            default = 1
+        "--unify_gc_strand"
+            help = "Unify GC strand (true/false), true subtracts 1 from position of negative strand CpG so 5-CG-3/3-GC-5 align in coordinates"
+            arg_type = Bool
+            default = true
+        "--ks"
+            help = "K means cluster numbers to evaluate (comma separated ranges, e.g. '2:20,32:2:60')"
+            default = "2:20,32:2:60"
+        "--n_ils_restarts"
+            help = "Number of iterated local search restarts"
+            arg_type = Int
+            default = 2
+        "--n_restarts"
+            help = "Number of random restarts"
+            arg_type = Int
+            default = 20
+        "--random_seed_offset"
+            help = "Random seed offset"
+            arg_type = Int
+            default = 0
+        "--epochs"
+            help = "Maximum epochs for ILS"
+            arg_type = Int
+            default = 1000
+        "--rejection_neighbourhood_fraction"
+            help = "Max consectuive rejections in hill climbing = rejection_neighbourhood_fraction*k*readdepth"
+            arg_type = Float64
+            default = 0.08
+        "--max_rejections"
+            help = "Maximum consecutive rejections in hillclimbing, only used in rejection_neighbourhood_fraction = 0"
+            arg_type = Int
+            default = 150
+        "--maxiter"
+            help = "Maximum iterations for kmeans"
+            arg_type = Int
+            default = 300
+        "--linkage"
+            help = "Hierarchical clustering linkage method (single, complete, average, etc.)"
+            default = "single"
+        "--logiter"
+            help = "Log clustering iterations"
+            action = :store_true
+        "--label"
+            help = "Label for output files"
+            default = ""
+        "files"
+            nargs = '+'
+            help = "BAM/CRAM files"
+            required = true
+    end
+
     return parse_args(s)
+end
+
+function parse_ranges(s::String)
+    res = Int[]
+    for p in split(s, ',')
+        p = strip(p)
+        isempty(p) && continue
+        if occursin(':', p)
+            parts = split(p, ':')
+            if length(parts) == 2
+                append!(res, parse(Int, parts[1]):parse(Int, parts[2]))
+            elseif length(parts) == 3
+                append!(res, parse(Int, parts[1]):parse(Int, parts[2]):parse(Int, parts[3]))
+            end
+        else
+            push!(res, parse(Int, p))
+        end
+    end
+    return res
 end
 
 # function (@main)(args)
@@ -277,6 +374,31 @@ function julia_main()::Cint
                      startlabel=Symbol(opts["start"]),
                      stoplabel=Symbol(opts["stop"]))
         end
+    elseif cmd == "cluster"
+        opts = parsed_args["cluster"]
+        features = Tuple(Symbol.(strip.(split(opts["features"], ','))))
+        ks = parse_ranges(opts["ks"])
+        linkage_sym = Symbol(opts["linkage"])
+        
+        cluster_peaks(opts["peaks"], opts["files"], opts["output"];
+            dw=opts["dw"],
+            features=features,
+            dx=opts["dx"],
+            smooth_sigma=opts["smooth_sigma"],
+            strictfirefeatures=opts["strictfirefeatures"],
+            unify_gc_strand=opts["unify_gc_strand"],
+            ks=ks,
+            n_ils_restarts=opts["n_ils_restarts"],
+            n_restarts=opts["n_restarts"],
+            random_seed_offset=opts["random_seed_offset"],
+            epochs=opts["epochs"],
+            rejection_neighbourhood_fraction=opts["rejection_neighbourhood_fraction"],
+            max_rejections=opts["max_rejections"],
+            maxiter=opts["maxiter"],
+            linkage=linkage_sym,
+            logiter=opts["logiter"],
+            label=opts["label"]
+        )
     end
 
     return 0
