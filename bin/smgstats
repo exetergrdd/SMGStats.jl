@@ -15,7 +15,33 @@ PROJECT_ROOT="$(dirname "$DIR")"
 # Use JULIA_CMD environment variable if set, otherwise default to "julia"
 JULIA=${JULIA_CMD:-julia}
 
+# Default to using all available threads ('auto') unless JULIA_NUM_THREADS is set
+THREADS=${JULIA_NUM_THREADS:-auto}
+
+# Parse arguments for -t/--threads
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -t|--threads)
+      THREADS="$2"
+      shift 2
+      ;;
+    -t=*)
+      THREADS="${1#*=}"
+      shift 1
+      ;;
+    --threads=*)
+      THREADS="${1#*=}"
+      shift 1
+      ;;
+    *)
+      ARGS+=("$1")
+      shift 1
+      ;;
+  esac
+done
+
 # Run Julia with the project environment active
 # We execute the `main` function (defined by @main in src/main.jl)
-# passing all command line arguments ("$@")
-exec "$JULIA" --project="$PROJECT_ROOT" -e 'using SMGStats; SMGStats.julia_main()' -- "$@"
+# passing all remaining command line arguments ("${ARGS[@]}")
+exec "$JULIA" --project="$PROJECT_ROOT" -t "$THREADS" -e 'using SMGStats; SMGStats.julia_main()' -- "${ARGS[@]}"
