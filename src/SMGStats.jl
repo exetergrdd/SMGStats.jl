@@ -15,13 +15,16 @@ using ProgressMeter
 using SMGReader
 using Statistics
 using StatsBase
-
+using Random
+using Clustering
+using Distances
+using JLD2
 using ImageFiltering
 
 using HypothesisTests
 
 
-export firestats, unicodeplot, displayplots, writeallstats, readstats, plotstat, htmlreport, statname, samplesummary,
+export firestats, unicodeplot, displayplots, writeallstats, readstats, readmultistats, plotstat, plotmultistat, htmlreport, htmlmultireport, statname, samplesummary,
     ChromStat, ModCrossCor, ModHist, ModMetaHist, ModRate, NucMSPLenHist, NucMSPRate, ReadLengthCounter, MetaPlot, NucMonoDiRatio,
     @smgstats,
     metaplot, loadregions,
@@ -33,7 +36,8 @@ export firestats, unicodeplot, displayplots, writeallstats, readstats, plotstat,
     countfire, countfire_wrapper, countfire_sweep,
     loadbed, bedintervals, buildintervalset, bedchromintervals, buildchromintervalset,
     differentialaccessibility,
-    smglog
+    smglog,
+    ModAllFireRead, ModGroupFileReader, collectstencilreads, read_depth_table, featurematrix, select_kmeans_k_bic
 
 
 
@@ -59,13 +63,16 @@ include("regions.jl")
 include("stats/stats.jl")
 include("report.jl")
 include("multireport.jl")
-include("main.jl")
 include("summarystats.jl")
 
 include("coaccess.jl")
 include("diff.jl")
 
 include("countfires.jl")
-include("countfires_sweep.jl")
+include("collectreads.jl")
+include("stencilcluster.jl")
+# include("countfires_sweep.jl")
+
+include("main.jl")
 
 end
