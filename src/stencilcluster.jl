@@ -934,21 +934,28 @@ function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_
         :phasing_score => (p -> filtmean(p, isinf)) => :mean_read_phasing_score,
         )
     
+    ### Build cluster-level metrics DataFrame
+    k = length(clusterresult.optimal_model.counts)
+    cluster_metrics = DataFrame(cluster = 1:k)
+
     ### fire depth
     fire_pile = clustercenters(featurematrix(loc, reads; features=(:fire_elem, ), weight_fire=1, dx=1).M, clusterresult.optimal_model)
 
-
-    gdf.max_fire_depth_rate = vec(maximum(fire_pile, dims=1))
-    gdf.max_fire_depth .= Int.(round.(clusterresult.optimal_model.counts.*gdf.max_fire_depth_rate))
+    cluster_metrics.max_fire_depth_rate = replace(vec(maximum(fire_pile, dims=1)), NaN => 0.0)
+    cluster_metrics.max_fire_depth = Int.(round.(clusterresult.optimal_model.counts .* cluster_metrics.max_fire_depth_rate))
     
     #### nrl_stats
     FM = featureblock(featmat, nrl_feature, M=clusterresult.optimal_model.centers)
+
     A = autocor(FM, 1:(size(FM, 1)-1))
     detrended = Vector{Float64}(undef, size(FM, 1) - 1)
     
     nrls = [characterise_nucleosomes_spectral!(a, featmat.ldx[1:end-1], detrended=detrended) for a in eachcol(A)]
     
-    [gdf DataFrame(nrls)]
+    cluster_metrics = hcat(cluster_metrics, DataFrame(nrls))
+    
+    # Safely merge cluster metrics back to the read-populated clusters in gdf
+    leftjoin(gdf, cluster_metrics, on=:cluster)
 end
 
 """
@@ -962,6 +969,8 @@ function modclustertable_5mC(chrom, loc, reads, clusterresult; unifystrand=true,
     cluster = Int[]
     pos = Int[]
     mod = Bool[]
+
+    
     
     for (k, (r, a)) in enumerate(zip(reads, clusterresult.optimal_model.assignments))
         
@@ -985,23 +994,55 @@ function modclustertable_5mC(chrom, loc, reads, clusterresult; unifystrand=true,
         end
     end
     
-    mct = (; readid, cluster, pos, mod) |> DataFrame
-    mct.chrom .= chrom
-    mct.start .= first(loc)
-    mct.stop .= last(loc)
-    mcounts = coalesce.(unstack(combine(groupby(mct, [:chrom, :start, :stop, :cluster, :pos, :mod]), nrow => :count), [:chrom, :start, :stop, :cluster, :pos], :mod, :count), 0)
-    rename!(mcounts, "true" => "mod", "false" => "unmod")
+    mct = DataFrame(readid=readid, cluster=cluster, pos=pos, mod=mod)
+    mct.chrom = fill(chrom, nrow(mct))
+    mct.start = fill(first(loc), nrow(mct))
+    mct.stop  = fill(last(loc), nrow(mct))
+    
+    mcounts = combine(groupby(mct, [:chrom, :start, :stop, :cluster, :pos]), 
+        :mod => (x -> count(identity, x)) => :mod,
+        :mod => (x -> count(!, x)) => :unmod
+    )
+    
+    if nrow(mcounts) == 0
+        mcounts.total = Int[]
+        mcounts.rate = Float64[]
+        mcounts.total_mod = Int[]
+        mcounts.total_unmod = Int[]
+        mcounts.total_rate = Float64[]
+        mcounts.pvalue = Float64[]
+        return mcounts
+    end
+
     mcounts.total = mcounts.mod .+ mcounts.unmod
-    mcounts.rate = mcounts.mod./mcounts.total
+    mcounts.rate = mcounts.mod ./ mcounts.total
     mcounts = mcounts[mcounts.total .> min_mods, :]
+    
+    if nrow(mcounts) == 0
+        mcounts.total_mod = Int[]
+        mcounts.total_unmod = Int[]
+        mcounts.total_rate = Float64[]
+        mcounts.pvalue = Float64[]
+        return mcounts
+    end
+
     maxmods = combine(groupby(mcounts, :pos), :mod => maximum => :max)
-    pos_above_5 = maxmods[maxmods.max .> min_mods, :]
-    mcounts = mcounts[mcounts.pos .∈ Ref(Set(pos_above_5.pos)), :]
+    pos_above_5 = maxmods[maxmods.max .> min_mods, :pos]
+    mcounts = mcounts[mcounts.pos .∈ Ref(Set(pos_above_5)), :]
+    
+    if nrow(mcounts) == 0
+        mcounts.total_mod = Int[]
+        mcounts.total_unmod = Int[]
+        mcounts.total_rate = Float64[]
+        mcounts.pvalue = Float64[]
+        return mcounts
+    end
+
     transform!(groupby(mcounts, :pos), :mod => sum => :total_mod, :unmod => sum => :total_unmod)
-    mcounts.total_rate = mcounts.total_mod./(mcounts.total_mod .+ mcounts.total_unmod)
+    mcounts.total_rate = mcounts.total_mod ./ (mcounts.total_mod .+ mcounts.total_unmod)
     bts = BinomialTest.(mcounts.mod, mcounts.total, mcounts.total_rate)
     mcounts.pvalue = pvalue.(bts)
-    mcounts
+    return mcounts
 end
 
 ###### Main loop
