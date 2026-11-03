@@ -2,7 +2,7 @@
 
 julia_version = "1.12.3"
 manifest_format = "2.0"
-project_hash = "2003e43ed9334f0c6317968257be3145d4ab5e1d"
+project_hash = "31bbf24ab32e2f54f1d479be99fba82df2828f34"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -1785,6 +1785,16 @@ uuid = "4607b0f0-06f3-5cda-b6b1-a6196a1729e9"
 deps = ["Artifacts", "Libdl", "libblastrampoline_jll"]
 uuid = "bea87d4a-7f5b-5778-9afe-8cc45184846c"
 version = "7.8.3+2"
+
+[[deps.SwarmMakie]]
+deps = ["KernelDensity", "Makie", "Random", "StableRNGs", "StatsBase"]
+git-tree-sha1 = "345288cc718690340ef362fc717b94a1958a9f06"
+uuid = "0b1c068e-6a84-4e66-8136-5c95cafa83ed"
+version = "0.2.1"
+weakdeps = ["AlgebraOfGraphics"]
+
+    [deps.SwarmMakie.extensions]
+    AlgebraOfGraphicsExt = "AlgebraOfGraphics"
 
 [[deps.TOML]]
 deps = ["Dates"]
