@@ -122,6 +122,9 @@ function parse_commandline()
         "cluster"
             action = :command
             help = "Run stencil clustering on genomic regions"
+        "report"
+            action = :command
+            help = "Generate HTML reports and interactive multi-region catalog for clustering results"
     end
 
     @add_arg_table! s["stats"] begin
@@ -291,6 +294,35 @@ function parse_commandline()
             required = true
     end
 
+    @add_arg_table! s["report"] begin
+        "--input", "-i"
+            help = "Input directory containing cluster .jld2 files, or a single .jld2 file"
+            required = true
+        "--output", "-o"
+            help = "Output directory for HTML reports and master catalog"
+            required = true
+        "--exondata", "-e"
+            help = "Path to exondata GTF (.gtf.gz) or arrow file for gene models and TSS distances"
+            default = nothing
+        "--longest_only"
+            help = "Plot only the longest transcript model per gene"
+            arg_type = Bool
+            default = true
+        "--no_reports"
+            help = "Skip rendering individual region reports (only generate catalog index)"
+            action = :store_true
+        "--force"
+            help = "Overwrite and regenerate existing HTML reports"
+            action = :store_true
+        "--limit"
+            help = "Limit number of regions to process (for testing)"
+            arg_type = Int
+            default = -1
+        "--title"
+            help = "Title for master catalog dashboard"
+            default = "SMGStats Chromatin Cluster Catalog"
+    end
+
     return parse_args(s)
 end
 
@@ -398,6 +430,25 @@ function julia_main()::Cint
             linkage=linkage_sym,
             logiter=opts["logiter"],
             label=opts["label"]
+        )
+    elseif cmd == "report"
+        opts = parsed_args["report"]
+        input_path = opts["input"]
+        out_path = opts["output"]
+        exondata_path = opts["exondata"]
+        longest_only = opts["longest_only"]
+        generate_reports = !opts["no_reports"]
+        skip_existing = !opts["force"]
+        limit = opts["limit"] > 0 ? opts["limit"] : nothing
+        title = opts["title"]
+
+        build_cluster_catalog(input_path, out_path;
+            exondata=exondata_path,
+            longest_only=longest_only,
+            generate_reports=generate_reports,
+            skip_existing=skip_existing,
+            limit=limit,
+            title=title
         )
     end
 
