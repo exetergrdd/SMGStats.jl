@@ -565,9 +565,21 @@ Identifies the optimal number of clusters `K` from the candidate vector `ks` usi
 Bayesian Information Criterion (BIC). It explores clustering assignments with Iterated 
 Local Search (ILS) and multiple restarts to avoid local minima.
 """
-function select_k_kmeans_bic(M::Matrix{Float64}, ks::AbstractVector{Int}; n_ils_restarts::Int=1, n_restarts::Int=20, random_seed_offset=0, epochs::Int=1000, rejection_neighbourhood_fraction=0.0, max_rejections=150, maxiter::Int=300, linkage=:single, rng=Xoshiro(), logiter=false)
+function select_k_kmeans_bic(M::Matrix{Float64}, ks::AbstractVector{Int}; max_k_fraction=0.65, n_ils_restarts::Int=1, n_restarts::Int=20, random_seed_offset=0, epochs::Int=1000, rejection_neighbourhood_fraction=0.0, max_rejections=150, maxiter::Int=300, linkage=:single, rng=Xoshiro(), logiter=false)
     n_features, n_samples = size(M)
     
+    # 1. Constrain candidate k values to at most max_k_fraction of read depth (n_samples), and at least 1
+    max_k = if isnothing(max_k_fraction) || max_k_fraction <= 0.0
+        n_samples
+    else
+        max(1, floor(Int, n_samples * max_k_fraction))
+    end
+    
+    valid_ks = filter(k -> 1 <= k <= min(n_samples, max_k), ks)
+    if isempty(valid_ks)
+        valid_ks = [min(n_samples, max_k)]
+    end
+    ks = sort(unique(valid_ks))
 
     best_bics = zeros(Float64, length(ks))
     
@@ -581,8 +593,8 @@ function select_k_kmeans_bic(M::Matrix{Float64}, ks::AbstractVector{Int}; n_ils_
     max_read_assignment_entropy = zeros(Float64, n_samples)
     max_assignment_entropy = 0.0
     
-    D_dist = pairwise(SqEuclidean(), M, dims=2)
-    hc = hclust(D_dist, linkage=linkage)
+    # Hierarchical clustering only needed if any candidate k > 1 and n_samples >= 2
+    hc = (n_samples >= 2 && any(k -> k > 1, ks)) ? hclust(pairwise(SqEuclidean(), M, dims=2), linkage=linkage) : nothing
     
     logtrace = []
     if logiter
@@ -595,7 +607,11 @@ function select_k_kmeans_bic(M::Matrix{Float64}, ks::AbstractVector{Int}; n_ils_
         end
 
         init_clustering = KMeansData(n_features, n_samples, k)
-        init_clustering.assignments .= cutree(hc, k=k)
+        if k == 1
+            init_clustering.assignments .= 1
+        else
+            init_clustering.assignments .= cutree(hc, k=k)
+        end
         fill!(init_clustering.to_update, true)
         
         update_cluster_center!(init_clustering, M, rng)
@@ -608,36 +624,37 @@ function select_k_kmeans_bic(M::Matrix{Float64}, ks::AbstractVector{Int}; n_ils_
         
         globalbest_cost = initial_cost
         bestoverall_cost = initial_cost
-        best_restart = 0
+        best_restart = (k == 1) ? 1 : 0
         total_failures = initial_converged ? 0 : 1
         
-        
-        for seed_offset in 1:n_ils_restarts
-            copyto!(worker, init_clustering)
-            copyto!(bestoverall, init_clustering)
-            bestoverall_cost = initial_cost
-            for restart_seed in 1:n_restarts
-                current_seed = restart_seed + (seed_offset - 1)*n_restarts + random_seed_offset
-                Random.seed!(rng, current_seed)
+        if k > 1
+            for seed_offset in 1:n_ils_restarts
+                copyto!(worker, init_clustering)
+                copyto!(bestoverall, init_clustering)
+                bestoverall_cost = initial_cost
+                for restart_seed in 1:n_restarts
+                    current_seed = restart_seed + (seed_offset - 1)*n_restarts + random_seed_offset
+                    Random.seed!(rng, current_seed)
 
-                # Reset strictly to the single-linkage base state for every restart
-                # copyto!(worker, init_clustering)
-                # copyto!(currentbest, init_clustering)
-                copyto!(worker, bestoverall)
-                currentbest_cost, failures = hillclimb_kmeans!(M, initial_cost, worker, currentbest, rng, epochs=epochs, max_rejections=max_rejections, maxiter=maxiter, logiter=logiter, logtrace=logtrace, restart_seed=restart_seed)
-                total_failures += failures
+                    # Reset strictly to the single-linkage base state for every restart
+                    # copyto!(worker, init_clustering)
+                    # copyto!(currentbest, init_clustering)
+                    copyto!(worker, bestoverall)
+                    currentbest_cost, failures = hillclimb_kmeans!(M, initial_cost, worker, currentbest, rng, epochs=epochs, max_rejections=max_rejections, maxiter=maxiter, logiter=logiter, logtrace=logtrace, restart_seed=restart_seed)
+                    total_failures += failures
 
-                if currentbest_cost < bestoverall_cost
-                    copyto!(bestoverall, currentbest)
-                    bestoverall_cost = currentbest_cost
-                    # best_restart = restart_seed
+                    if currentbest_cost < bestoverall_cost
+                        copyto!(bestoverall, currentbest)
+                        bestoverall_cost = currentbest_cost
+                        # best_restart = restart_seed
+                    end
                 end
-            end
-            
-            if bestoverall_cost < globalbest_cost
-                copyto!(globalbest, bestoverall)
-                globalbest_cost = bestoverall_cost
-                best_restart = seed_offset
+                
+                if bestoverall_cost < globalbest_cost
+                    copyto!(globalbest, bestoverall)
+                    globalbest_cost = bestoverall_cost
+                    best_restart = seed_offset
+                end
             end
         end
         
@@ -715,9 +732,10 @@ end
 
 function characterise_nucleosomes_spectral!(ac_signal::AbstractVector{Float64}, lags::AbstractVector; 
                                            min_nrl=140.0, max_nrl=240.0, 
-                                           phase_threshold=0.04, n = length(ac_signal), detrended = zeros(Float64, n)) #, f = Figure(), k = 1) # Note: Scale is different, needs tuning
+                                           phase_threshold=0.035, n = length(ac_signal), detrended = zeros(Float64, n))
     
     n = length(ac_signal)
+    lags_rel = first(lags) == 0 ? lags : (lags .- first(lags))
     
     # 1. Detrend the signal to remove the global exponential decay.
     # We use a moving average roughly the size of one nucleosome (~160bp).
@@ -725,7 +743,7 @@ function characterise_nucleosomes_spectral!(ac_signal::AbstractVector{Float64}, 
     detrended .= 0
     
     # Estimate how many bins make up ~160bp dynamically based on the lags array
-    dx_approx = lags[2] - lags[1]
+    dx_approx = lags_rel[2] - lags_rel[1]
     half_w = max(1, round(Int, 160 / dx_approx) ÷ 2)
     
     @inbounds for i in 1:n
@@ -741,8 +759,6 @@ function characterise_nucleosomes_spectral!(ac_signal::AbstractVector{Float64}, 
         detrended[i] = ac_signal[i] - m
     end
     
-   
-    
     # 2. Targeted Discrete-Time Fourier Transform (Matched Filter)
     best_score = -Inf
     best_nrl = 0.0
@@ -755,7 +771,7 @@ function characterise_nucleosomes_spectral!(ac_signal::AbstractVector{Float64}, 
         @inbounds for i in 1:n
             # A pure cosine perfectly models an autocorrelation signal:
             # Peak at 0, 1*nrl, 2*nrl... Trough at 0.5*nrl, 1.5*nrl...
-            template_wave = cos(2.0 * π * lags[i] / test_nrl)
+            template_wave = cos(2.0 * π * lags_rel[i] / test_nrl)
             score += detrended[i] * template_wave
         end
         
@@ -777,12 +793,11 @@ function characterise_nucleosomes_spectral!(ac_signal::AbstractVector{Float64}, 
     
     is_closed = best_score > phase_threshold
     
-    # 3. Optional: Determine if the 2N harmonic is dominant (like your previous peak_type)
+    # 3. Determine if the 2N harmonic is dominant
     peak_type = :none
     if is_closed
-        # Fast linear interpolation to check the detrended heights at 1N vs 2N
-        idx_1N = searchsortedfirst(lags, best_nrl)
-        idx_2N = searchsortedfirst(lags, best_nrl * 2.0)
+        idx_1N = searchsortedfirst(lags_rel, best_nrl)
+        idx_2N = searchsortedfirst(lags_rel, best_nrl * 2.0)
         
         val_1N = (1 <= idx_1N <= n) ? detrended[idx_1N] : 0.0
         val_2N = (1 <= idx_2N <= n) ? detrended[idx_2N] : 0.0
@@ -847,14 +862,30 @@ function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire,
     rate_fire = total_fire./readlength
     rate_nuc = total_nuc./readlength
     
-    ### read level nrls
-    
+    ### read level nrls (FIRE)
     FM = featureblock(featmat, nrl_feature)
     A = autocor(FM, 1:(size(FM, 1)-1))
     detrended = Vector{Float64}(undef, size(FM, 1) - 1)
+    lags = featmat.ldx[1:end-1] .- first(featmat.ldx)
     
-    nrls = [characterise_nucleosomes_spectral!(a, featmat.ldx[1:end-1], detrended=detrended) for a in eachcol(A)]
+    nrls = [characterise_nucleosomes_spectral!(a, lags, detrended=detrended) for a in eachcol(A)]
     
+    ### read level nrls (6mA)
+    nrl_6mA_vals = fill(missing, n)
+    phasing_score_6mA_vals = fill(NaN, n)
+    is_closed_6mA_vals = fill(false, n)
+    peak_type_6mA_vals = fill(:none, n)
+
+    if :mod_6mA in featmat.features
+        FM_6mA = featureblock(featmat, :mod_6mA)
+        A_6mA = autocor(FM_6mA, 1:(size(FM_6mA, 1)-1))
+        detrended_6mA = Vector{Float64}(undef, size(FM_6mA, 1) - 1)
+        nrls_6mA = [characterise_nucleosomes_spectral!(a, lags, detrended=detrended_6mA) for a in eachcol(A_6mA)]
+        nrl_6mA_vals = [n.nrl for n in nrls_6mA]
+        phasing_score_6mA_vals = [n.phasing_score for n in nrls_6mA]
+        is_closed_6mA_vals = [n.is_closed for n in nrls_6mA]
+        peak_type_6mA_vals = [n.peak_type for n in nrls_6mA]
+    end
 
     index = 1:n
     (; index, cluster, cost, max_assignment_entropy,
@@ -878,7 +909,15 @@ function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire,
         nrl=[n.nrl for n in nrls],
         phasing_score=[n.phasing_score for n in nrls],
         phasing_implies_closed=[n.is_closed for n in nrls],
-        phasing_peak_type=[n.peak_type for n in nrls]) |> DataFrame
+        phasing_peak_type=[n.peak_type for n in nrls],
+        nrl_fire=[n.nrl for n in nrls],
+        phasing_score_fire=[n.phasing_score for n in nrls],
+        phasing_implies_closed_fire=[n.is_closed for n in nrls],
+        phasing_peak_type_fire=[n.peak_type for n in nrls],
+        nrl_6mA=nrl_6mA_vals,
+        phasing_score_6mA=phasing_score_6mA_vals,
+        phasing_implies_closed_6mA=is_closed_6mA_vals,
+        phasing_peak_type_6mA=peak_type_6mA_vals) |> DataFrame
 end
 
 
@@ -911,11 +950,13 @@ end
     clustertable(readtable, chrom, loc, reads, clusterresult, featmat; kwargs...)
 
 Aggregates read-level statistics from `readtable` into a cluster-level summary DataFrame.
-Provides metrics such as mean modification rates, phasing scores, and feature depths 
+Provides metrics such as read counts (`:totalreads` / `:count`), mean modification rates, 
+strand skew, allele/haplotype skew, sample skew, and dual spectral nucleosome repeat lengths (FIRE and 6mA)
 for each discovered cluster in the locus.
 """
 function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire)
-    gdf = combine(groupby(readtable, [:chrom, :start, :stop, :cluster]),
+    gdf = combine(groupby(readtable, :cluster),
+        nrow => :totalreads,
         :cost => mean => :meancost,
         :max_assignment_entropy => mean => :mean_max_assignment_entropy,
         :sample => countstring => :counts_sample,
@@ -932,7 +973,20 @@ function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_
         :nrl => (n -> sum(!ismissing, n)) => :total_valid_nrls,
         :nrl => (n -> filtmean(n, ismissing)) => :mean_read_nrl,
         :phasing_score => (p -> filtmean(p, isinf)) => :mean_read_phasing_score,
+    )
+    gdf.count = gdf.totalreads
+    gdf.chrom = fill(chrom, nrow(gdf))
+    gdf.start = fill(first(loc), nrow(gdf))
+    gdf.stop  = fill(last(loc), nrow(gdf))
+
+    if hasproperty(readtable, :nrl_6mA)
+        gdf_6mA = combine(groupby(readtable, :cluster),
+            :nrl_6mA => (n -> sum(!ismissing, n)) => :total_valid_nrls_6mA,
+            :nrl_6mA => (n -> filtmean(n, ismissing)) => :mean_read_nrl_6mA,
+            :phasing_score_6mA => (p -> filtmean(p, isinf)) => :mean_read_phasing_score_6mA,
         )
+        gdf = leftjoin(gdf, gdf_6mA, on=:cluster)
+    end
     
     ### Build cluster-level metrics DataFrame
     k = length(clusterresult.optimal_model.counts)
@@ -944,18 +998,145 @@ function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_
     cluster_metrics.max_fire_depth_rate = replace(vec(maximum(fire_pile, dims=1)), NaN => 0.0)
     cluster_metrics.max_fire_depth = Int.(round.(clusterresult.optimal_model.counts .* cluster_metrics.max_fire_depth_rate))
     
-    #### nrl_stats
-    FM = featureblock(featmat, nrl_feature, M=clusterresult.optimal_model.centers)
+    # Skew stats: Strand, Haplotype/Allele, Sample
+    strand_or = zeros(Float64, k)
+    strand_logor_se = zeros(Float64, k)
+    strand_pvalue = zeros(Float64, k)
+    
+    hap_or = fill(NaN, k)
+    hap_logor_se = fill(NaN, k)
+    hap_pvalue = fill(NaN, k)
+    
+    sample_or = fill(NaN, k)
+    sample_logor_se = fill(NaN, k)
+    sample_pvalue = fill(NaN, k)
+    sample_min_pvalue = fill(NaN, k)
+    
+    for c in 1:k
+        if k > 1
+            ft_s = fisher(readtable.cluster .== c, readtable.strand .== true)
+            strand_or[c] = ft_s.or
+            strand_logor_se[c] = ft_s.logor_se
+            strand_pvalue[c] = ft_s.fisher_bpv
+        else
+            strand_or[c] = 1.0
+            strand_logor_se[c] = NaN
+            strand_pvalue[c] = 1.0
+        end
+    end
+    
+    if hasproperty(readtable, :hap) && k > 1
+        phased_mask = (readtable.hap .== 1) .| (readtable.hap .== 2)
+        if count(phased_mask) >= 10
+            sub_clust = readtable.cluster[phased_mask]
+            sub_hap1 = readtable.hap[phased_mask] .== 1
+            for c in 1:k
+                ft_h = fisher(sub_clust .== c, sub_hap1)
+                hap_or[c] = ft_h.or
+                hap_logor_se[c] = ft_h.logor_se
+                hap_pvalue[c] = ft_h.fisher_bpv
+            end
+        end
+    end
 
+    if hasproperty(readtable, :sample) && k > 1
+        samples = unique(readtable.sample)
+        if length(samples) == 2
+            is_s1 = readtable.sample .== samples[1]
+            for c in 1:k
+                ft_samp = fisher(readtable.cluster .== c, is_s1)
+                sample_or[c] = ft_samp.or
+                sample_logor_se[c] = ft_samp.logor_se
+                sample_pvalue[c] = ft_samp.fisher_bpv
+                sample_min_pvalue[c] = ft_samp.fisher_bpv
+            end
+        elseif length(samples) > 2
+            for c in 1:k
+                best_pv = 1.0
+                best_or = NaN
+                best_se = NaN
+                for s in samples
+                    ft_samp = fisher(readtable.cluster .== c, readtable.sample .== s)
+                    if !isnan(ft_samp.fisher_bpv) && ft_samp.fisher_bpv <= best_pv
+                        best_pv = ft_samp.fisher_bpv
+                        best_or = ft_samp.or
+                        best_se = ft_samp.logor_se
+                    end
+                end
+                sample_or[c] = best_or
+                sample_logor_se[c] = best_se
+                sample_pvalue[c] = best_pv
+                sample_min_pvalue[c] = best_pv
+            end
+        else
+            sample_or .= 1.0
+            sample_logor_se .= NaN
+            sample_pvalue .= 1.0
+            sample_min_pvalue .= 1.0
+        end
+    else
+        sample_or .= 1.0
+        sample_logor_se .= NaN
+        sample_pvalue .= 1.0
+        sample_min_pvalue .= 1.0
+    end
+    
+    cluster_metrics.strand_or = strand_or
+    cluster_metrics.strand_logor_se = strand_logor_se
+    cluster_metrics.strand_pvalue = strand_pvalue
+    
+    cluster_metrics.hap_or = hap_or
+    cluster_metrics.hap_logor_se = hap_logor_se
+    cluster_metrics.hap_pvalue = hap_pvalue
+    
+    cluster_metrics.sample_or = sample_or
+    cluster_metrics.sample_logor_se = sample_logor_se
+    cluster_metrics.sample_pvalue = sample_pvalue
+    cluster_metrics.sample_min_pvalue = sample_min_pvalue
+
+    #### FIRE NRL stats
+    FM = featureblock(featmat, nrl_feature, M=clusterresult.optimal_model.centers)
     A = autocor(FM, 1:(size(FM, 1)-1))
     detrended = Vector{Float64}(undef, size(FM, 1) - 1)
+    lags = featmat.ldx[1:end-1] .- first(featmat.ldx)
     
-    nrls = [characterise_nucleosomes_spectral!(a, featmat.ldx[1:end-1], detrended=detrended) for a in eachcol(A)]
+    nrls = [characterise_nucleosomes_spectral!(a, lags, detrended=detrended) for a in eachcol(A)]
     
-    cluster_metrics = hcat(cluster_metrics, DataFrame(nrls))
+    cluster_metrics.nrl = [n.nrl for n in nrls]
+    cluster_metrics.phasing_score = [n.phasing_score for n in nrls]
+    cluster_metrics.is_closed = [n.is_closed for n in nrls]
+    cluster_metrics.peak_type = [n.peak_type for n in nrls]
+    
+    cluster_metrics.nrl_fire = cluster_metrics.nrl
+    cluster_metrics.phasing_score_fire = cluster_metrics.phasing_score
+    cluster_metrics.is_closed_fire = cluster_metrics.is_closed
+    cluster_metrics.peak_type_fire = cluster_metrics.peak_type
+
+    #### 6mA NRL stats
+    if :mod_6mA in featmat.features
+        FM_6mA = featureblock(featmat, :mod_6mA, M=clusterresult.optimal_model.centers)
+        A_6mA = autocor(FM_6mA, 1:(size(FM_6mA, 1)-1))
+        detrended_6mA = Vector{Float64}(undef, size(FM_6mA, 1) - 1)
+        nrls_6mA = [characterise_nucleosomes_spectral!(a, lags, detrended=detrended_6mA) for a in eachcol(A_6mA)]
+        
+        cluster_metrics.nrl_6mA = [n.nrl for n in nrls_6mA]
+        cluster_metrics.phasing_score_6mA = [n.phasing_score for n in nrls_6mA]
+        cluster_metrics.is_closed_6mA = [n.is_closed for n in nrls_6mA]
+        cluster_metrics.peak_type_6mA = [n.peak_type for n in nrls_6mA]
+    else
+        cluster_metrics.nrl_6mA = fill(missing, k)
+        cluster_metrics.phasing_score_6mA = fill(NaN, k)
+        cluster_metrics.is_closed_6mA = fill(false, k)
+        cluster_metrics.peak_type_6mA = fill(:none, k)
+    end
     
     # Safely merge cluster metrics back to the read-populated clusters in gdf
-    leftjoin(gdf, cluster_metrics, on=:cluster)
+    gdf_t = leftjoin(gdf, cluster_metrics, on=:cluster)
+
+    first_fields = ["cluster", "chrom", "start", "stop"]
+    fields = [first_fields ; setdiff(names(gdf_t), first_fields)]
+    
+    gdf_t[!, fields]
 end
 
 """
@@ -1055,7 +1236,7 @@ Run stencil clustering on all peaks defined in a BED file. This is the main entr
 for the clustering workflow. Computes clustering for each region and writes results to `outdir`.
 It executes in parallel across regions if Julia is started with multiple threads.
 """
-function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6mA), dx=15, smooth_sigma=0.0, strictfirefeatures=1, unify_gc_strand=true, ks=[2:20 ; 32:2:60], n_ils_restarts=2, n_restarts=20, random_seed_offset = 0,
+function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6mA), dx=15, smooth_sigma=0.0, strictfirefeatures=1, unify_gc_strand=true, ks=[1:20 ; 22:2:60], max_k_fraction=0.5, n_ils_restarts=2, n_restarts=20, random_seed_offset = 0,
                 epochs=1000, rejection_neighbourhood_fraction=0.08, max_rejections=150, maxiter=300, linkage=:single, logiter=false, label="")
 
 
@@ -1081,7 +1262,7 @@ function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6m
 
         rng = Xoshiro()
         clustering = cluster_region(chrom, peakloc, bams; dw=dw, features=features, dx=dx, smooth_sigma=smooth_sigma, strictfirefeatures=strictfirefeatures, unify_gc_strand=unify_gc_strand, ks=ks,
-                 n_ils_restarts=n_ils_restarts, n_restarts=n_restarts, random_seed_offset = random_seed_offset,
+                 max_k_fraction=max_k_fraction, n_ils_restarts=n_ils_restarts, n_restarts=n_restarts, random_seed_offset = random_seed_offset,
                 epochs=epochs, rejection_neighbourhood_fraction=rejection_neighbourhood_fraction, max_rejections=max_rejections, maxiter=maxiter, 
                 linkage=linkage, rng=rng, logiter=logiter)
 
@@ -1169,8 +1350,8 @@ Extracts reads, computes the feature matrix, determines the optimal K using BIC
 and iterated local search k-means, and returns the models and metric tables.
 """
 function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA), dx=10, smooth_sigma = 0.0, strictfirefeatures=1,
-              unify_gc_strand=true, ks=2:2:60, n_ils_restarts=1, n_restarts=20, random_seed_offset = 0,
-               max_rejections=150, maxiter=300, linkage=linkage, rng=Xoshiro(), logiter=false,
+              unify_gc_strand=true, ks=[1; 2:2:60], max_k_fraction=0.5, n_ils_restarts=1, n_restarts=20, random_seed_offset = 0,
+               max_rejections=150, maxiter=300, linkage=:single, rng=Xoshiro(), logiter=false,
                 epochs=1000, rejection_neighbourhood_fraction=0.08)
 
     loc = (first(peakloc) - dw):(last(peakloc) + dw)
@@ -1179,7 +1360,7 @@ function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA)
     reads = collectstencilreads(bams, chrom, loc, strictfirefeatures=strictfirefeatures)
     CM = featurematrix(loc, reads, dx=dx, features=features, unify_gc_strand=unify_gc_strand, smooth_sigma=smooth_sigma)
     
-    optimal_clustering  = select_k_kmeans_bic(CM.M, ks, n_ils_restarts=n_ils_restarts, n_restarts=n_restarts, epochs=epochs, linkage=linkage, logiter=logiter, 
+    optimal_clustering  = select_k_kmeans_bic(CM.M, ks, max_k_fraction=max_k_fraction, n_ils_restarts=n_ils_restarts, n_restarts=n_restarts, epochs=epochs, linkage=linkage, logiter=logiter, 
                                 rejection_neighbourhood_fraction=rejection_neighbourhood_fraction, max_rejections=max_rejections, maxiter=maxiter, random_seed_offset=random_seed_offset, rng=rng);
     ### result tables
 
