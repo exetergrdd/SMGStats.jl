@@ -46,7 +46,14 @@ function fisher(a, b, c, d)
         smglog("FisherExactTest failed for $a, $b, $c, $d")
         return (; or=NaN, logor_se=NaN, fisher_lpv=NaN, fisher_bpv=NaN, fisher_rpv=NaN)
     end
+end
 
+function fisher(x::AbstractVector{Bool}, y::AbstractVector{Bool})
+    a = sum(x .& y)
+    b = sum(x .& .!y)
+    c = sum(.!x .& y)
+    d = sum(.!x .& .!y)
+    return fisher(a, b, c, d)
 end
 
 function binomialtest(x, n, p)
