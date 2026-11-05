@@ -29,6 +29,8 @@ function print_json(io::IO, s::AbstractString)
             print(io, "\\r")
         elseif c == '\t'
             print(io, "\\t")
+        elseif c == '/'
+            print(io, "\\/")
         elseif c < ' '
             print(io, "\\u", string(Int(c), base=16, pad=4))
         else
@@ -86,18 +88,31 @@ Mutates `clustering.clustertable` in place and returns `clustering`.
 function update_clustering_nrl!(clustering; phase_threshold::Float64=0.035, nrl_feature::Symbol=:fire)
     if haskey(clustering, :clustertable) && haskey(clustering, :CM) && haskey(clustering, :optimal_clustering)
         try
-            FM = featureblock(clustering.CM, nrl_feature, M=clustering.optimal_clustering.optimal_model.centers)
-            A = autocor(FM, 1:(size(FM, 1) - 1))
-            n_lags = size(FM, 1) - 1
-            lags = clustering.CM.ldx[1:n_lags] .- first(clustering.CM.ldx)
-            detrended = Vector{Float64}(undef, n_lags)
-            nrls = [characterise_nucleosomes_spectral!(A[:, c], lags; detrended=detrended, phase_threshold=phase_threshold) for c in 1:size(A, 2)]
-            
             ct = clustering.clustertable
-            ct.nrl = [r.nrl for r in nrls]
-            ct.phasing_score = [r.phasing_score for r in nrls]
-            ct.is_closed = [r.is_closed for r in nrls]
-            ct.peak_type = [r.peak_type for r in nrls]
+            !issorted(ct.cluster) && sort!(ct, :cluster)
+            centers = clustering.optimal_clustering.optimal_model.centers
+            k = size(centers, 2)
+            cids = ct.cluster
+
+            nrls_fire = _spectral_nrl_columns(clustering.CM, nrl_feature, k; M=centers, phase_threshold=phase_threshold)
+            ct.nrl           = [nrls_fire.nrl[c] for c in cids]
+            ct.phasing_score = [nrls_fire.phasing_score[c] for c in cids]
+            ct.is_closed     = [nrls_fire.is_closed[c] for c in cids]
+            ct.peak_type     = [nrls_fire.peak_type[c] for c in cids]
+            if hasproperty(ct, :nrl_fire)
+                ct.nrl_fire           = ct.nrl
+                ct.phasing_score_fire = ct.phasing_score
+                ct.is_closed_fire     = ct.is_closed
+                ct.peak_type_fire     = ct.peak_type
+            end
+
+            if :mod_6mA in clustering.CM.features && hasproperty(ct, :nrl_6mA)
+                nrls_6mA = _spectral_nrl_columns(clustering.CM, :mod_6mA, k; M=centers, phase_threshold=phase_threshold)
+                ct.nrl_6mA           = [nrls_6mA.nrl[c] for c in cids]
+                ct.phasing_score_6mA = [nrls_6mA.phasing_score[c] for c in cids]
+                ct.is_closed_6mA     = [nrls_6mA.is_closed[c] for c in cids]
+                ct.peak_type_6mA     = [nrls_6mA.peak_type[c] for c in cids]
+            end
         catch err
             # Silently fallback if CM or model cannot be re-evaluated
         end
@@ -130,12 +145,12 @@ function load_clustering(fpath::AbstractString; phase_threshold::Float64=0.035)
 end
 
 """
-    extract_locus_summary(clustering; exondata=nothing)
+    extract_locus_summary(clustering; exondata=nothing, slug=nothing)
 
 Extracts key diagnostic metrics, genomic context, and cluster summaries from a `clustering` object
 for catalog indexing and client-side filtering.
 """
-function extract_locus_summary(clustering; exondata=nothing)
+function extract_locus_summary(clustering; exondata=nothing, slug::Union{Nothing, AbstractString}=nothing)
     chrom = String(clustering.chrom)
     peak_start = first(clustering.peakloc)
     peak_stop  = last(clustering.peakloc)
@@ -144,25 +159,27 @@ function extract_locus_summary(clustering; exondata=nothing)
     loc_stop   = last(clustering.loc)
     opt_k      = clustering.optimal_clustering.optimal_k
     total_reads = length(clustering.reads)
+    ct         = clustering.clustertable
+    rt         = clustering.readtable
     
-    slug = "$(chrom)_$(peak_start)_$(peak_stop)"
+    resolved_slug = isnothing(slug) ? "$(chrom)_$(peak_start)_$(peak_stop)" : String(slug)
     region_id = "$(chrom):$(peak_start)-$(peak_stop)"
     
-    # Genomic annotations
+    # Genomic annotations on the target regulatory peak
     annot = if !isnothing(exondata)
-        annotate_locus(exondata, chrom, clustering.loc)
+        annotate_locus(exondata, chrom, clustering.peakloc)
     else
         (; nearest_gene="Unannotated", nearest_gene_id="", gene_type="", tss_distance=0, context="Unknown", transcripts=TranscriptModel[])
     end
     
     # Accessibility
-    prop_open = hasproperty(clustering.readtable, :has_fire) ? 
-        round(count(clustering.readtable.has_fire) / max(1, total_reads), digits=3) : 0.0
+    prop_open = hasproperty(rt, :has_fire) ? 
+        round(count(rt.has_fire) / max(1, total_reads), digits=3) : 0.0
     
     # NRLs
     valid_nrls = Float64[]
-    if hasproperty(clustering.clustertable, :nrl)
-        for val in clustering.clustertable.nrl
+    if hasproperty(ct, :nrl)
+        for val in ct.nrl
             if !ismissing(val) && !isnan(val)
                 push!(valid_nrls, Float64(val))
             end
@@ -172,27 +189,43 @@ function extract_locus_summary(clustering; exondata=nothing)
     max_nrl = isempty(valid_nrls) ? nothing : round(maximum(valid_nrls), digits=1)
     
     # Biological flags
-    has_open_cluster = hasproperty(clustering.clustertable, :proportion_has_fire) && 
-        any(clustering.clustertable.proportion_has_fire .> 0.25)
-    has_closed_cluster = hasproperty(clustering.clustertable, :is_closed) && 
-        any(clustering.clustertable.is_closed)
+    has_open_cluster = hasproperty(ct, :proportion_has_fire) && any(ct.proportion_has_fire .> 0.25)
+    has_closed_cluster = hasproperty(ct, :is_closed) && any(ct.is_closed)
     
-    # Strand / Haplotype Fisher tests
-    has_strand_skew = false
-    if opt_k > 1 && hasproperty(clustering.readtable, :strand) && length(unique(clustering.readtable.strand)) > 1
-        strand_pvals = [fisher(clustering.readtable.cluster .== k, clustering.readtable.strand).fisher_bpv for k in 1:opt_k]
-        has_strand_skew = any(filter(!isnan, strand_pvals) .< 0.01)
+    # Strand / Haplotype / Sample Fisher skew flags (prefer precomputed clustertable p-values)
+    has_strand_skew = if opt_k <= 1
+        false
+    elseif hasproperty(ct, :strand_pvalue)
+        any(p -> !isnan(p) && p < 0.01, ct.strand_pvalue)
+    elseif hasproperty(rt, :strand) && length(unique(rt.strand)) > 1
+        any(k -> (pv = fisher(rt.cluster .== k, rt.strand).fisher_bpv; !isnan(pv) && pv < 0.01), 1:opt_k)
+    else
+        false
     end
     
-    has_hap_skew = false
-    if opt_k > 1 && hasproperty(clustering.readtable, :hap) && any(clustering.readtable.hap .== 1) && any(clustering.readtable.hap .== 2)
-        hap_mask = (clustering.readtable.hap .== 1) .| (clustering.readtable.hap .== 2)
+    has_hap_skew = if opt_k <= 1
+        false
+    elseif hasproperty(ct, :hap_pvalue) && any(!isnan, ct.hap_pvalue)
+        any(p -> !isnan(p) && p < 0.01, ct.hap_pvalue)
+    elseif hasproperty(rt, :hap) && any(rt.hap .== 1) && any(rt.hap .== 2)
+        hap_mask = (rt.hap .== 1) .| (rt.hap .== 2)
         if count(hap_mask) >= 10
-            sub_clust = clustering.readtable.cluster[hap_mask]
-            sub_hap = clustering.readtable.hap[hap_mask] .== 1
-            hap_pvals = [fisher(sub_clust .== k, sub_hap).fisher_bpv for k in 1:opt_k]
-            has_hap_skew = any(filter(!isnan, hap_pvals) .< 0.01)
+            sub_clust = rt.cluster[hap_mask]
+            sub_hap = rt.hap[hap_mask] .== 1
+            any(k -> (pv = fisher(sub_clust .== k, sub_hap).fisher_bpv; !isnan(pv) && pv < 0.01), 1:opt_k)
+        else
+            false
         end
+    else
+        false
+    end
+
+    has_sample_skew = if opt_k <= 1
+        false
+    elseif hasproperty(ct, :sample_pvalue) && any(!isnan, ct.sample_pvalue)
+        any(p -> !isnan(p) && p < 0.01, ct.sample_pvalue)
+    else
+        false
     end
     
     sig_cpg_count = (hasproperty(clustering, :modclustertable) && !isnothing(clustering.modclustertable) && nrow(clustering.modclustertable) > 0) ?
@@ -200,7 +233,7 @@ function extract_locus_summary(clustering; exondata=nothing)
         
     return (;
         region_id = region_id,
-        slug = slug,
+        slug = resolved_slug,
         chrom = chrom,
         peak_start = peak_start,
         peak_stop = peak_stop,
@@ -221,8 +254,9 @@ function extract_locus_summary(clustering; exondata=nothing)
         has_closed_cluster = has_closed_cluster,
         has_strand_skew = has_strand_skew,
         has_hap_skew = has_hap_skew,
+        has_sample_skew = has_sample_skew,
         sig_cpg_count = sig_cpg_count,
-        report_url = "regions/$(slug)/report.html"
+        report_url = "regions/$(resolved_slug)/report.html"
     )
 end
 
@@ -286,26 +320,31 @@ function build_cluster_catalog(inputs, outdir;
     
     # 3. Process each region
     catalog_entries = []
+    seen_slugs = Dict{String, Int}()
     p = Progress(n_total, desc="Generating Cluster Catalog: ", barlen=40)
     
     for (idx, fpath) in enumerate(files)
         try
             clustering = load_clustering(fpath; phase_threshold=phase_threshold)
-            sum_entry = extract_locus_summary(clustering; exondata=loaded_exondata)
+            base_slug = "$(clustering.chrom)_$(first(clustering.peakloc))_$(last(clustering.peakloc))"
+            slug_count = get(seen_slugs, base_slug, 0) + 1
+            seen_slugs[base_slug] = slug_count
+            unique_slug = slug_count == 1 ? base_slug : "$(base_slug)_$(slug_count)"
+
+            sum_entry = extract_locus_summary(clustering; exondata=loaded_exondata, slug=unique_slug)
             push!(catalog_entries, sum_entry)
             
             if generate_reports
                 region_dir = joinpath(outdir, "regions", sum_entry.slug)
                 report_html_path = joinpath(region_dir, "report.html")
-                if skip_existing && isfile(report_html_path)
-                    # Report already rendered
-                else
+                if !(skip_existing && isfile(report_html_path))
                     render_cluster_report(clustering, region_dir; 
                         exondata=loaded_exondata, 
                         longest_only=longest_only, 
                         gene_flank=gene_flank,
                         phase_threshold=phase_threshold,
-                        catalog_path="../../index.html"
+                        catalog_path="../../index.html",
+                        update_nrl=false
                     )
                 end
             end
@@ -351,8 +390,6 @@ function generate_catalog_html(catalog_entries, title)
     
     hap_skew_count = count(r -> r.has_hap_skew, catalog_entries)
     pct_hap = n_regions > 0 ? round(hap_skew_count / n_regions * 100, digits=1) : 0.0
-    
-    avg_reads = n_regions > 0 ? round(mean([r.total_reads for r in catalog_entries]), digits=0) : 0
     
     return """
 <!DOCTYPE html>
@@ -990,6 +1027,7 @@ function generate_catalog_html(catalog_entries, title)
           <button class="chip-toggle" id="toggleOpen">🔥 Open State</button>
           <button class="chip-toggle" id="toggleHap">🧬 Allelic Skew</button>
           <button class="chip-toggle" id="toggleStrand">⮂ Strand Skew</button>
+          <button class="chip-toggle" id="toggleSample">🧪 Sample Skew</button>
           <button class="chip-toggle" id="toggleCpG">● Diff 5mC</button>
         </div>
       </div>
@@ -1071,6 +1109,7 @@ function generate_catalog_html(catalog_entries, title)
       toggleOpen: false,
       toggleHap: false,
       toggleStrand: false,
+      toggleSample: false,
       toggleCpG: false,
       sortBy: 'reads_desc',
       pageSize: 50,
@@ -1118,6 +1157,7 @@ function generate_catalog_html(catalog_entries, title)
         if (state.toggleOpen && !row.has_open_cluster) return false;
         if (state.toggleHap && !row.has_hap_skew) return false;
         if (state.toggleStrand && !row.has_strand_skew) return false;
+        if (state.toggleSample && !row.has_sample_skew) return false;
         if (state.toggleCpG && row.sig_cpg_count === 0) return false;
 
         return true;
@@ -1131,6 +1171,7 @@ function generate_catalog_html(catalog_entries, title)
           case 'k_desc':     return b.optimal_k - a.optimal_k || b.total_reads - a.total_reads;
           case 'tss_asc':    return Math.abs(a.tss_distance) - Math.abs(b.tss_distance);
           case 'open_desc':  return b.prop_open - a.prop_open;
+          case 'nrl_asc':    return (a.min_nrl ?? 9999) - (b.min_nrl ?? 9999);
           case 'coords':     return a.chrom.localeCompare(b.chrom, undefined, {numeric: true}) || a.peak_start - b.peak_start;
           default: return 0;
         }
@@ -1213,6 +1254,7 @@ function generate_catalog_html(catalog_entries, title)
         let tagsHtml = '';
         if (row.has_hap_skew) tagsHtml += `<span class="tag-badge tag-hap" title="Allelic / Haplotype Skew (p < 0.01)">Hap Skew</span>`;
         if (row.has_strand_skew) tagsHtml += `<span class="tag-badge tag-strand" title="Strand Skew (p < 0.01)">Strand Skew</span>`;
+        if (row.has_sample_skew) tagsHtml += `<span class="tag-badge tag-strand" title="Sample Skew (p < 0.01)">Sample Skew</span>`;
         if (row.sig_cpg_count > 0) tagsHtml += `<span class="tag-badge tag-cpg" title="\${row.sig_cpg_count} differentially methylated CpGs">\${row.sig_cpg_count} Diff 5mC</span>`;
         if (!tagsHtml) tagsHtml = `<span style="color: var(--text-dim); font-size: 0.75rem;">None</span>`;
 
@@ -1338,7 +1380,34 @@ function generate_catalog_html(catalog_entries, title)
     setupToggle('toggleOpen', 'toggleOpen');
     setupToggle('toggleHap', 'toggleHap');
     setupToggle('toggleStrand', 'toggleStrand');
+    setupToggle('toggleSample', 'toggleSample');
     setupToggle('toggleCpG', 'toggleCpG');
+
+    // Column Header Click Sorting
+    const colSortMap = {
+      coords: 'coords',
+      gene: 'tss_asc',
+      context: 'tss_asc',
+      reads: 'reads_desc',
+      k: 'k_desc',
+      open: 'open_desc',
+      nrl: 'nrl_asc'
+    };
+    document.querySelectorAll('#regionsTable th[data-col]').forEach(th => {
+      th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (col === 'reads' && state.sortBy === 'reads_desc') {
+          state.sortBy = 'reads_asc';
+        } else if (colSortMap[col]) {
+          state.sortBy = colSortMap[col];
+        }
+        if ([...sortSelect.options].some(o => o.value === state.sortBy)) {
+          sortSelect.value = state.sortBy;
+        }
+        state.currentPage = 1;
+        render();
+      });
+    });
 
     // Initial render
     render();
