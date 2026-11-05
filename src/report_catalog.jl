@@ -1601,6 +1601,12 @@ function generate_catalog_html(catalog_entries, title)
 end
 
 
+function _html_escape(s::AbstractString)
+    s1 = replace(s, "&" => "&amp;")
+    s2 = replace(s1, "<" => "&lt;")
+    return replace(s2, ">" => "&gt;")
+end
+
 function _github_heading_slug(s::AbstractString)
     plain = replace(s, r"<[^>]+>" => "")
     plain = replace(plain, "&amp;" => "", "&lt;" => "", "&gt;" => "", "&quot;" => "", "&#39;" => "")
@@ -1621,13 +1627,38 @@ function _add_markdown_heading_ids(html_str::AbstractString)
     end)
 end
 
-function _prepare_markdown_display_math(md_str::AbstractString)
-    return replace(md_str, r"\$\$(.+?)\$\$"s => function(m)
+function _markdown_to_html_with_math(md_str::AbstractString)
+    math_blocks = Pair{String, String}[]
+    idx = 0
+
+    # 1. Extract display math $$...$$ BEFORE Markdown.parse so backslashes (\\), <, >, _ are untouched
+    s1 = replace(md_str, r"\$\$(.+?)\$\$"s => function(m)
         mat = match(r"^\$\$(.+?)\$\$$"s, m)
         isnothing(mat) && return m
-        eq = strip(mat.captures[1])
-        return "<div class=\"math-block\">\\[\n$(eq)\n\\]</div>"
+        idx += 1
+        token = "SMGMATHDISPLAYTOKEN$(idx)END"
+        eq = _html_escape(strip(mat.captures[1]))
+        push!(math_blocks, token => "<div class=\"math-block\">\\[\n$(eq)\n\\]</div>")
+        return token
     end)
+
+    # 2. Extract inline math $...$ BEFORE Markdown.parse (only outside fenced/inline code blocks)
+    s2 = replace(s1, r"(```[\s\S]*?```|`[^`\n]+`)|\$([^\$\n]+?)\$" => function(m)
+        startswith(m, "`") && return m
+        mat = match(r"^\$([^\$\n]+?)\$$", m)
+        isnothing(mat) && return m
+        idx += 1
+        token = "SMGMATHINLINETOKEN$(idx)END"
+        eq = _html_escape(strip(mat.captures[1]))
+        push!(math_blocks, token => "<span class=\"math-inline\">\\($(eq)\\)</span>")
+        return token
+    end)
+
+    html_str = sprint(Markdown.html, Markdown.parse(s2))
+    for (token, replacement) in math_blocks
+        html_str = replace(html_str, token => replacement)
+    end
+    return html_str
 end
 
 const _CLUSTER_GUIDE_MD_DEFAULT_PATH = joinpath(@__DIR__, "..", "docs", "cluster_guide.md")
@@ -1653,8 +1684,7 @@ function render_cluster_guide_html(outpath::AbstractString;
     else
         "# Comprehensive Guide to `smgstats cluster`\n\nDocumentation file not found at `$(guide_md_path)`."
     end
-    prepared_md = _prepare_markdown_display_math(md_text)
-    raw_body_html = sprint(Markdown.html, Markdown.parse(prepared_md))
+    raw_body_html = _markdown_to_html_with_math(md_text)
     body_html = _add_markdown_heading_ids(raw_body_html)
 
     html_doc = """
