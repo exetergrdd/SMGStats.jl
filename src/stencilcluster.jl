@@ -720,6 +720,167 @@ function select_k_kmeans_bic(M::Matrix{Float64}, ks::AbstractVector{Int}; max_k_
 end
 
 
+###### Cluster Ordering & Relabeling
+
+"""
+    default_cluster_order(CM, optimal_clustering; feature=:mod_6mA, bin_dx=10, s=1.0, active_first=true)
+    default_cluster_order(clustering; kwargs...)
+
+Computes a spatial left-to-right permutation vector `perm` (`perm[new_id] = old_id`) from cluster centroids.
+Extracts `feature` from `CM` (defaulting to `:mod_6mA` if present, otherwise `first(CM.features)`),
+applies coarse spatial binning via `mean_spatial_bin(CF, bin_dx)`, and orders clusters with peaks exceeding
+`mean(CB) + s * std(CB)` left-to-right by peak bin position (`active_first=true` places active clusters first),
+followed by the remaining clusters ordered left-to-right by peak bin position.
+"""
+function default_cluster_order(CM, optimal_clustering; feature::Symbol=:mod_6mA, bin_dx::Int=10, s::Real=1.0, active_first::Bool=true)
+    model = hasproperty(optimal_clustering, :optimal_model) ? optimal_clustering.optimal_model : optimal_clustering
+    C = model.centers
+    k = size(C, 2)
+    k <= 1 && return collect(1:k)
+
+    feat = (feature in CM.features) ? feature : first(CM.features)
+    CF = featureblock(CM, feat; M=C)
+    CB = mean_spatial_bin(CF, bin_dx)
+
+    std_cb = std(CB)
+    t = mean(CB) + Float64(s) * (isnan(std_cb) ? 0.0 : std_cb)
+    cm = [findmax(c) for c in eachcol(CB)]
+    return sortperm(cm, by = x -> (active_first ? (x[1] <= t) : (x[1] > t), x[2]))
+end
+
+default_cluster_order(clustering; kwargs...) = default_cluster_order(clustering.CM, clustering.optimal_clustering; kwargs...)
+
+@inline _is_missing_or_nan(v) = ismissing(v) || (v isa AbstractFloat && isnan(v))
+
+function _compare_sort_vals(a, b, rev::Bool)
+    ma = _is_missing_or_nan(a)
+    mb = _is_missing_or_nan(b)
+    (ma && mb) && return 0
+    ma && return 1   # Always push missing/NaN to the end
+    mb && return -1
+    if a == b
+        return 0
+    end
+    return (rev ? isless(b, a) : isless(a, b)) ? -1 : 1
+end
+
+"""
+    cluster_order(clustering_or_table; by=nothing, rev=false, kwargs...)
+
+Returns a cluster permutation vector `perm` (`perm[new_id] = old_id`) for reordering clusters:
+- When `by === nothing` and a full `clustering` NamedTuple is provided, computes `default_cluster_order(clustering; kwargs...)`.
+- When `by` is a column name (`Symbol` or `String`), a vector/tuple of column names or `col => rev` pairs,
+  or a function `row -> key` operating on rows of `clustertable`, sorts the clusters accordingly while keeping
+  `missing` and `NaN` values at the end.
+"""
+function cluster_order(clustering_or_table; by=nothing, rev::Bool=false, kwargs...)
+    if isnothing(by)
+        hasproperty(clustering_or_table, :CM) && return default_cluster_order(clustering_or_table; kwargs...)
+        throw(ArgumentError("`by` must be specified when ordering directly from a clustertable DataFrame."))
+    end
+
+    ct = clustering_or_table isa DataFrame ? clustering_or_table : clustering_or_table.clustertable
+    n = nrow(ct)
+    n <= 1 && return collect(1:n)
+
+    rows = collect(eachrow(ct))
+    row_perm = if by isa Function
+        keys = [by(r) for r in rows]
+        sortperm(1:n, lt = (i, j) -> _compare_sort_vals(keys[i], keys[j], rev) < 0)
+    elseif by isa Union{Symbol, AbstractString}
+        col = Symbol(by)
+        vals = ct[!, col]
+        sortperm(1:n, lt = (i, j) -> _compare_sort_vals(vals[i], vals[j], rev) < 0)
+    elseif by isa Pair{<:Union{Symbol, AbstractString}, Bool}
+        col = Symbol(first(by))
+        col_rev = last(by)
+        vals = ct[!, col]
+        sortperm(1:n, lt = (i, j) -> _compare_sort_vals(vals[i], vals[j], col_rev) < 0)
+    else
+        specs = Tuple(c isa Pair ? (Symbol(first(c)), Bool(last(c))) : (Symbol(c), rev) for c in by)
+        sortperm(1:n, lt = (i, j) -> begin
+            for (col, col_rev) in specs
+                cmp = _compare_sort_vals(ct[i, col], ct[j, col], col_rev)
+                cmp != 0 && return cmp < 0
+            end
+            return false
+        end)
+    end
+
+    return Int[ct.cluster[i] for i in row_perm]
+end
+
+function _reorder_model!(model, perm::AbstractVector{<:Integer}, inv_perm::Vector{Int})
+    k = length(model.counts)
+    (length(perm) == k && isperm(perm)) || throw(ArgumentError("perm must be a valid permutation of 1:$k"))
+    k <= 1 && return model
+
+    model.centers .= model.centers[:, perm]
+    model.counts  .= model.counts[perm]
+    model.probabilities .= model.probabilities[perm, :]
+    @inbounds for i in eachindex(model.assignments)
+        model.assignments[i] = inv_perm[model.assignments[i]]
+    end
+    return model
+end
+
+"""
+    reorder_clusters!(target, perm::AbstractVector{<:Integer})
+    reorder_clusters!(clustering; by=nothing, rev=false, kwargs...)
+
+Reorders and relabels clusters in-place according to the permutation vector `perm` (`perm[new_id] = old_id`),
+or by computing `perm = cluster_order(clustering; by=by, rev=rev, kwargs...)`.
+
+Works seamlessly via duck typing on:
+1. `KMeansOptResult` or its portable `NamedTuple` (`centers`, `counts`, `probabilities`, `assignments`),
+2. `optimal_clustering` `NamedTuple` returned by `select_k_kmeans_bic`,
+3. Full `clustering` `NamedTuple` returned by `cluster_region` or `load_clustering` (updating `optimal_clustering`,
+   `readtable`, `clustertable`, and `modclustertable` in-place).
+"""
+function reorder_clusters!(target, perm::AbstractVector{<:Integer})
+    inv_perm = invperm(Int.(perm))
+
+    if hasproperty(target, :optimal_clustering)
+        _reorder_model!(target.optimal_clustering.optimal_model, perm, inv_perm)
+    elseif hasproperty(target, :optimal_model)
+        _reorder_model!(target.optimal_model, perm, inv_perm)
+    elseif hasproperty(target, :centers) && hasproperty(target, :assignments)
+        _reorder_model!(target, perm, inv_perm)
+    else
+        throw(ArgumentError("Unsupported target type for reorder_clusters!"))
+    end
+
+    if hasproperty(target, :readtable) && !isnothing(target.readtable)
+        rt = target.readtable
+        @inbounds for i in eachindex(rt.cluster)
+            rt.cluster[i] = inv_perm[rt.cluster[i]]
+        end
+    end
+
+    if hasproperty(target, :clustertable) && !isnothing(target.clustertable) && nrow(target.clustertable) > 0
+        ct = target.clustertable
+        @inbounds for i in eachindex(ct.cluster)
+            ct.cluster[i] = inv_perm[ct.cluster[i]]
+        end
+        sort!(ct, :cluster)
+    end
+
+    if hasproperty(target, :modclustertable) && !isnothing(target.modclustertable) && nrow(target.modclustertable) > 0
+        mct = target.modclustertable
+        @inbounds for i in eachindex(mct.cluster)
+            mct.cluster[i] = inv_perm[mct.cluster[i]]
+        end
+        sort!(mct, [:cluster, :pos])
+    end
+
+    return target
+end
+
+function reorder_clusters!(clustering; by=nothing, rev::Bool=false, kwargs...)
+    perm = cluster_order(clustering; by=by, rev=rev, kwargs...)
+    return reorder_clusters!(clustering, perm)
+end
+
 
 ###### Results tables
 function clustercenters(M, model)
@@ -1312,7 +1473,8 @@ and iterated local search k-means, and returns the models and metric tables.
 function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA), dx=10, smooth_sigma = 0.0, strictfirefeatures=1,
               unify_gc_strand=true, ks=[1; 2:2:60], max_k_fraction=0.5, n_ils_restarts=1, n_restarts=20, random_seed_offset = 0,
                max_rejections=150, maxiter=300, linkage=:single, rng=Xoshiro(), logiter=false,
-                epochs=1000, rejection_neighbourhood_fraction=0.08)
+                epochs=1000, rejection_neighbourhood_fraction=0.08,
+                order_feature::Symbol=:mod_6mA, order_bin_dx::Int=10, order_std::Real=1.0, active_first::Bool=true)
 
     loc = (first(peakloc) - dw):(last(peakloc) + dw)
 
@@ -1325,6 +1487,9 @@ function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA)
     
     optimal_clustering  = select_k_kmeans_bic(CM.M, ks, max_k_fraction=max_k_fraction, n_ils_restarts=n_ils_restarts, n_restarts=n_restarts, epochs=epochs, linkage=linkage, logiter=logiter, 
                                 rejection_neighbourhood_fraction=rejection_neighbourhood_fraction, max_rejections=max_rejections, maxiter=maxiter, random_seed_offset=random_seed_offset, rng=rng);
+
+    reorder_clusters!(optimal_clustering, default_cluster_order(CM, optimal_clustering; feature=order_feature, bin_dx=order_bin_dx, s=order_std, active_first=active_first))
+
     ### result tables
 
     rt  = readtable(chrom, loc, reads, optimal_clustering, CM; unifystrand=unify_gc_strand)
