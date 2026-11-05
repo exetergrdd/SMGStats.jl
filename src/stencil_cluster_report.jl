@@ -409,22 +409,37 @@ function boxplot_read_uncertainty(clustering ; f = Figure(), axx=1, axy=1, direc
     f
 end
 
-function boxplot_nrl(clustering; f=Figure(), axx=1, axy=1, direction=:vertical)
-    valid_nrls = filter(r -> !ismissing(r.nrl), clustering.readtable)
-    if isempty(valid_nrls)
-        ax = Axis(f[axy, axx], title="No valid NRL calls")
+function _draw_nrl_panel!(f, pos, rt::DataFrame, col::Symbol, title::AbstractString, direction::Symbol)
+    if !hasproperty(rt, col)
+        ax = Axis(f[pos...], title="$title (Not available)")
         hidespines!(ax, :l, :t, :r, :b)
-        ax.xticks = ([], [])
-        ax.yticks = ([], [])
-        return f
+        hidexdecorations!(ax)
+        hideydecorations!(ax)
+        return
     end
-    
-     plt = data(valid_nrls) * mapping(:cluster => string, :nrl, color=:cluster => string) * 
-          (visual(BoxPlot, orientation = direction, show_outliers=false) + 
+    valid_nrls = sort(filter(r -> !ismissing(getproperty(r, col)), rt), :cluster)
+    if isempty(valid_nrls)
+        ax = Axis(f[pos...], title="$title (No periodic reads)")
+        hidespines!(ax, :l, :t, :r, :b)
+        hidexdecorations!(ax)
+        hideydecorations!(ax)
+        return
+    end
+    plt = data(valid_nrls) * mapping(:cluster => nonnumeric => "Cluster", col => "NRL (bp)", color=:cluster => nonnumeric) *
+          (visual(BoxPlot, orientation = direction, show_outliers=false) +
            visual(Beeswarm, direction = direction == :horizontal ? :x : :y, algorithm=:pseudorandom, strokecolor=:black, strokewidth=1))
+    draw!(f[pos...], plt, axis=(; title=title, xgridvisible=false, ygridvisible=false, yreversed = direction == :horizontal))
+end
 
-    draw!(f[axy, axx], plt, axis=(; xgridvisible=false, ygridvisible=false, yreversed = direction == :horizontal))
-    f
+function boxplot_nrl(clustering; f=Figure(size=(1500, 320)), axx=1, axy=1, direction=:horizontal, dual::Bool=true)
+    rt = clustering.readtable
+    if dual && (hasproperty(rt, :nrl_6mA) || (:mod_6mA in clustering.CM.features))
+        _draw_nrl_panel!(f, (axy, axx),     rt, :nrl,     "FIRE Read-Level NRL Distribution", direction)
+        _draw_nrl_panel!(f, (axy, axx + 1), rt, :nrl_6mA, "6mA Read-Level NRL Distribution",  direction)
+    else
+        _draw_nrl_panel!(f, (axy, axx),     rt, :nrl,     "FIRE Read-Level NRL Distribution", direction)
+    end
+    return f
 end
 
 
@@ -785,7 +800,7 @@ function plot_spectral_nrl(clustering; f=nothing, nrl_feature=:fire, phase_thres
     ncols = min(k, 4)
     nrows = cld(k, ncols)
     
-    fig = isnothing(f) ? Figure(size=(1100, max(260, 220 * nrows))) : f
+    fig = isnothing(f) ? Figure(size=(1500, max(280, 230 * nrows + 45))) : f
     
     has_fire = :fire in clustering.CM.features
     has_6mA  = :mod_6mA in clustering.CM.features
@@ -824,28 +839,46 @@ function plot_spectral_nrl(clustering; f=nothing, nrl_feature=:fire, phase_thres
         panel_title = "Cluster $c (" * join(title_parts, ", ") * ")"
         
         ax = Axis(fig[row, col], xgridvisible=false, ygridvisible=false,
-                  title=panel_title, xlabel="Lag (bp)", ylabel="Detrended AC")
+                  title=panel_title, titlesize=12, xlabel="Lag (bp)", ylabel="Detrended AC")
         
         if !isnothing(res_fire) && any(isfinite, detrended_fire)
-            lines!(ax, lags, detrended_fire, color=(:dodgerblue, 0.85), linewidth=1.5, label="FIRE AC")
+            lines!(ax, lags, detrended_fire, color=(:dodgerblue, 0.85), linewidth=1.5)
             if res_fire.is_closed
                 wave_fire = (2.0 * res_fire.phasing_score) .* cos.(2.0 * π .* lags ./ res_fire.nrl)
-                lines!(ax, lags, wave_fire, color=:blue, linestyle=:dash, linewidth=1.5, label="FIRE $(res_fire.nrl) bp")
+                lines!(ax, lags, wave_fire, color=:blue, linestyle=:dash, linewidth=1.5)
                 vlines!(ax, res_fire.nrl, color=:blue, linestyle=:dot)
             end
         end
         
         if !isnothing(res_6mA) && any(isfinite, detrended_6mA)
-            lines!(ax, lags, detrended_6mA, color=(:darkorange, 0.85), linewidth=1.5, label="6mA AC")
+            lines!(ax, lags, detrended_6mA, color=(:darkorange, 0.85), linewidth=1.5)
             if res_6mA.is_closed
                 wave_6mA = (2.0 * res_6mA.phasing_score) .* cos.(2.0 * π .* lags ./ res_6mA.nrl)
-                lines!(ax, lags, wave_6mA, color=:crimson, linestyle=:dash, linewidth=1.5, label="6mA $(res_6mA.nrl) bp")
+                lines!(ax, lags, wave_6mA, color=:crimson, linestyle=:dash, linewidth=1.5)
                 vlines!(ax, res_6mA.nrl, color=:crimson, linestyle=:dot)
             end
         end
         
         hidespines!(ax, :t, :r)
-        !isempty(ax.scene.plots) && axislegend(ax, framevisible=false, position=:rt, labelsize=8)
     end
+
+    leg_elems = LineElement[]
+    leg_labels = String[]
+    if has_fire
+        push!(leg_elems, LineElement(color=:dodgerblue, linewidth=2))
+        push!(leg_labels, "FIRE Detrended AC")
+        push!(leg_elems, LineElement(color=:blue, linestyle=:dash, linewidth=2))
+        push!(leg_labels, "FIRE Cosine Fit (NRL)")
+    end
+    if has_6mA
+        push!(leg_elems, LineElement(color=:darkorange, linewidth=2))
+        push!(leg_labels, "6mA Detrended AC")
+        push!(leg_elems, LineElement(color=:crimson, linestyle=:dash, linewidth=2))
+        push!(leg_labels, "6mA Cosine Fit (NRL)")
+    end
+    if !isempty(leg_elems)
+        Legend(fig[0, 1:ncols], leg_elems, leg_labels, orientation=:horizontal, framevisible=false, tellwidth=false, tellheight=true, labelsize=11)
+    end
+
     return fig
 end
