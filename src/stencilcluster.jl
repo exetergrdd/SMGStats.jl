@@ -1362,7 +1362,7 @@ Run stencil clustering on all peaks defined in a BED file. This is the main entr
 for the clustering workflow. Computes clustering for each region and writes results to `outdir`.
 It executes in parallel across regions if Julia is started with multiple threads.
 """
-function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6mA), dx=15, smooth_sigma=0.0, strictfirefeatures=1, unify_gc_strand=true, ks=[1:20 ; 22:2:60], max_k_fraction=0.5, n_ils_restarts=2, n_restarts=20, random_seed_offset = 0,
+function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6mA), dx=15, smooth_sigma=0.0, strictfirefeatures=1, unify_gc_strand=true, ks=[1:20 ; 22:2:60], max_k_fraction=0.65, n_ils_restarts=2, n_restarts=20, random_seed_offset = 0,
                 epochs=1000, rejection_neighbourhood_fraction=0.08, max_rejections=150, maxiter=300, linkage=:single, logiter=false, label="")
 
 
@@ -1370,7 +1370,26 @@ function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6m
     smglog("Peakfile            : ", peakfile)
     smglog("BAMs                : ", join(bams, ", "))
     smglog("Outdir              : ", outdir)
-    ### log for parameters?
+    smglog("Threads             : ", Threads.nthreads())
+    smglog("Parameters          : ")
+    smglog("  dw                               : ", dw)
+    smglog("  features                         : ", join(features, ", "))
+    smglog("  dx                               : ", dx)
+    smglog("  smooth_sigma                     : ", smooth_sigma)
+    smglog("  strictfirefeatures               : ", strictfirefeatures)
+    smglog("  unify_gc_strand                  : ", unify_gc_strand)
+    smglog("  ks                               : ", join(ks, ", "))
+    smglog("  max_k_fraction                   : ", max_k_fraction)
+    smglog("  n_ils_restarts                   : ", n_ils_restarts)
+    smglog("  n_restarts                       : ", n_restarts)
+    smglog("  random_seed_offset               : ", random_seed_offset)
+    smglog("  epochs                           : ", epochs)
+    smglog("  rejection_neighbourhood_fraction : ", rejection_neighbourhood_fraction)
+    smglog("  max_rejections                   : ", max_rejections)
+    smglog("  maxiter                          : ", maxiter)
+    smglog("  linkage                          : ", linkage)
+    smglog("  logiter                          : ", logiter)
+    smglog("  label                            : ", isempty(label) ? "<auto>" : label)
     peaks = loadbed(peakfile)
     
     smglog("Loaded              : ", size(peaks, 1), " regions")
@@ -1483,7 +1502,7 @@ Extracts reads, computes the feature matrix, determines the optimal K using BIC
 and iterated local search k-means, and returns the models and metric tables.
 """
 function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA), dx=10, smooth_sigma = 0.0, strictfirefeatures=1,
-              unify_gc_strand=true, ks=[1; 2:2:60], max_k_fraction=0.5, n_ils_restarts=1, n_restarts=20, random_seed_offset = 0,
+              unify_gc_strand=true, ks=[1; 2:2:60], max_k_fraction=0.65, n_ils_restarts=1, n_restarts=20, random_seed_offset = 0,
                max_rejections=150, maxiter=300, linkage=:single, rng=Xoshiro(), logiter=false,
                 epochs=1000, rejection_neighbourhood_fraction=0.08,
                 order_feature::Symbol=:mod_6mA, order_bin_dx::Int=10, order_std::Real=1.0, active_first::Bool=true,

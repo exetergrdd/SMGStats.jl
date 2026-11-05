@@ -249,8 +249,12 @@ function parse_commandline()
             arg_type = Bool
             default = true
         "--ks"
-            help = "K means cluster numbers to evaluate (comma separated ranges, e.g. '2:20,32:2:60')"
-            default = "2:20,32:2:60"
+            help = "K means cluster numbers to evaluate (comma separated ranges, e.g. '1:20,22:2:60')"
+            default = "1:20,22:2:60"
+        "--max_k_fraction"
+            help = "Maximum candidate k as a fraction of total spanning reads N (floor(Int, N * max_k_fraction))"
+            arg_type = Float64
+            default = 0.65
         "--n_ils_restarts"
             help = "Number of iterated local search restarts"
             arg_type = Int
@@ -420,6 +424,7 @@ function julia_main()::Cint
             strictfirefeatures=opts["strictfirefeatures"],
             unify_gc_strand=opts["unify_gc_strand"],
             ks=ks,
+            max_k_fraction=opts["max_k_fraction"],
             n_ils_restarts=opts["n_ils_restarts"],
             n_restarts=opts["n_restarts"],
             random_seed_offset=opts["random_seed_offset"],

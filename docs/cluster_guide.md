@@ -87,7 +87,8 @@ The CLI accepts both required positional/named parameters and optional algorithm
 
 | Argument | Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `--ks` | | String range(s) | `2:20,32:2:60` (CLI) / `1:20,22:2:60` (API) | Candidate cluster numbers $k$ evaluated by BIC. Comma-separated integers or Julia-style ranges (e.g. `1:20`, `2:2:30`). Automatically constrained so that $1 \le k \le \max(1, \lfloor N \cdot \text{max\_k\_fraction} \rfloor)$ (default `max_k_fraction = 0.5`). |
+| `--ks` | | String range(s) | `1:20,22:2:60` | Candidate cluster numbers $k$ evaluated by BIC. Comma-separated integers or Julia-style ranges (e.g. `1:20`, `2:2:30`). Automatically constrained by `--max_k_fraction`. |
+| `--max_k_fraction` | | Float | `0.65` | Maximum candidate $k$ as a fraction of total spanning reads $N$, constraining evaluated cluster counts to $1 \le k \le \max(1, \lfloor N \cdot \text{max\_k\_fraction} \rfloor)$. |
 | `--n_ils_restarts` | | Integer | `2` | Number of outer Iterated Local Search (ILS) restarts. Higher values reduce the chance of remaining trapped in suboptimal basins. |
 | `--n_restarts` | | Integer | `20` | Number of inner random hill-climbing restart passes per ILS cycle. |
 | `--random_seed_offset` | | Integer | `0` | Offset added to internal PRNG seeds for reproducible stochastic runs. |
