@@ -1020,7 +1020,7 @@ Builds a DataFrame summarizing statistics per read (molecule) over the specified
 Includes metrics such as read length, modification rates, feature densities, and 
 spectral nucleosome repeat lengths (NRLs).
 """
-function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire, unifystrand=true, labelfun = x -> replace(basename(x), r".bam|.cram|.haplotagged" => ""))
+function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire, unifystrand=true, peakname::AbstractString="peak_1", category::AbstractString="ClusterPeak", labelfun = x -> replace(basename(x), r".bam|.cram|.haplotagged" => ""))
     n = length(reads)
     cluster = clusterresult.optimal_model.assignments
     cost   = clusterresult.optimal_model.costs
@@ -1028,6 +1028,8 @@ function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire,
     strand = [r.strand for r in reads]
     
     chrom = [chrom for r in reads]
+    PeakName = fill(String(peakname), n)
+    Category = fill(String(category), n)
     sample = [labelfun(r.label) for r in reads]
     start = [max(r.lp, first(loc)) for r in reads]
     stop  = [min(r.rp, last(loc)) for r in reads]
@@ -1061,7 +1063,7 @@ function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire,
 
     index = 1:n
     (; index, cluster, cost, max_assignment_entropy,
-        sample, chrom, start, stop, strand, hap, readlength,
+        sample, chrom, start, stop, PeakName, Category, strand, hap, readlength,
         total_mod_6mA,
         total_unmod_6mA,
         rate_mod_6mA,
@@ -1126,7 +1128,9 @@ Provides metrics such as read counts (`:totalreads` / `:count`), mean modificati
 strand skew, allele/haplotype skew, sample skew, and dual spectral nucleosome repeat lengths (FIRE and 6mA)
 for each discovered cluster in the locus.
 """
-function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire)
+function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire,
+                      peakname::AbstractString = (hasproperty(readtable, :PeakName) && nrow(readtable) > 0) ? String(readtable.PeakName[1]) : "peak_1",
+                      category::AbstractString = (hasproperty(readtable, :Category) && nrow(readtable) > 0) ? String(readtable.Category[1]) : "ClusterPeak")
     gdf = combine(groupby(readtable, :cluster, sort=true),
         nrow => :totalreads,
         :cost => mean => :meancost,
@@ -1146,10 +1150,12 @@ function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_
         :nrl => filtmean => :mean_read_nrl,
         :phasing_score => filtmean => :mean_read_phasing_score,
     )
-    gdf.count = gdf.totalreads
-    gdf.chrom = fill(chrom, nrow(gdf))
-    gdf.start = fill(first(loc), nrow(gdf))
-    gdf.stop  = fill(last(loc), nrow(gdf))
+    gdf.count    = gdf.totalreads
+    gdf.chrom    = fill(chrom, nrow(gdf))
+    gdf.start    = fill(first(loc), nrow(gdf))
+    gdf.stop     = fill(last(loc), nrow(gdf))
+    gdf.PeakName = fill(String(peakname), nrow(gdf))
+    gdf.Category = fill(String(category), nrow(gdf))
 
     if hasproperty(readtable, :nrl_6mA)
         gdf_6mA = combine(groupby(readtable, :cluster, sort=true),
@@ -1273,7 +1279,7 @@ function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_
     # Safely merge cluster metrics back to the read-populated clusters in gdf and keep sorted by cluster 1:k
     gdf_t = sort!(leftjoin(gdf, cluster_metrics, on=:cluster), :cluster)
 
-    first_fields = ["cluster", "chrom", "start", "stop"]
+    first_fields = ["cluster", "chrom", "start", "stop", "PeakName", "Category"]
     fields = [first_fields ; setdiff(names(gdf_t), first_fields)]
     
     gdf_t[!, fields]
@@ -1369,22 +1375,26 @@ function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6m
     
     smglog("Loaded              : ", size(peaks, 1), " regions")
 
-    chroms = peaks.chrom
-    starts = peaks.start
-    stops  = peaks.stop
+    chroms     = peaks.chrom
+    starts     = peaks.start
+    stops      = peaks.stop
+    peaknames  = peaks.PeakName
+    categories = peaks.Category
 
     starttime = time()
     Threads.@threads for i in 1:size(peaks, 1)
         
-        chrom = String(chroms[i])
-        peakloc = starts[i]:stops[i]
-        smglog("Clustering              : ", chrom, ":", first(peakloc), "-", last(peakloc)) ### smglog is thread safe
+        chrom    = String(chroms[i])
+        peakloc  = starts[i]:stops[i]
+        peakname = String(peaknames[i])
+        category = String(categories[i])
+        smglog("Clustering              : ", chrom, ":", first(peakloc), "-", last(peakloc), " (", peakname, " [", category, "])") ### smglog is thread safe
 
         rng = Xoshiro()
         clustering = cluster_region(chrom, peakloc, bams; dw=dw, features=features, dx=dx, smooth_sigma=smooth_sigma, strictfirefeatures=strictfirefeatures, unify_gc_strand=unify_gc_strand, ks=ks,
                  max_k_fraction=max_k_fraction, n_ils_restarts=n_ils_restarts, n_restarts=n_restarts, random_seed_offset = random_seed_offset,
                 epochs=epochs, rejection_neighbourhood_fraction=rejection_neighbourhood_fraction, max_rejections=max_rejections, maxiter=maxiter, 
-                linkage=linkage, rng=rng, logiter=logiter)
+                linkage=linkage, rng=rng, logiter=logiter, peakname=peakname, category=category)
 
         !isnothing(clustering) && saveclustering(outdir, clustering, label)
     end
@@ -1411,6 +1421,8 @@ function save_portable_clustering(cluster_path, payload)
         chrom = payload.chrom, 
         peakloc = payload.peakloc, 
         loc = payload.loc, 
+        PeakName = hasproperty(payload, :PeakName) ? String(payload.PeakName) : "peak_1",
+        Category = hasproperty(payload, :Category) ? String(payload.Category) : "ClusterPeak",
         reads = map(to_portable, payload.reads), 
         CM = payload.CM, 
         optimal_clustering = portable_clustering, # Use the patched NamedTuple
@@ -1474,7 +1486,8 @@ function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA)
               unify_gc_strand=true, ks=[1; 2:2:60], max_k_fraction=0.5, n_ils_restarts=1, n_restarts=20, random_seed_offset = 0,
                max_rejections=150, maxiter=300, linkage=:single, rng=Xoshiro(), logiter=false,
                 epochs=1000, rejection_neighbourhood_fraction=0.08,
-                order_feature::Symbol=:mod_6mA, order_bin_dx::Int=10, order_std::Real=1.0, active_first::Bool=true)
+                order_feature::Symbol=:mod_6mA, order_bin_dx::Int=10, order_std::Real=1.0, active_first::Bool=true,
+                peakname::AbstractString="peak_1", category::AbstractString="ClusterPeak")
 
     loc = (first(peakloc) - dw):(last(peakloc) + dw)
 
@@ -1491,14 +1504,15 @@ function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA)
     reorder_clusters!(optimal_clustering, default_cluster_order(CM, optimal_clustering; feature=order_feature, bin_dx=order_bin_dx, s=order_std, active_first=active_first))
 
     ### result tables
-
-    rt  = readtable(chrom, loc, reads, optimal_clustering, CM; unifystrand=unify_gc_strand)
+    PeakName = String(peakname)
+    Category = String(category)
+    rt  = readtable(chrom, loc, reads, optimal_clustering, CM; unifystrand=unify_gc_strand, peakname=PeakName, category=Category)
     
-    ct  = clustertable(rt, chrom, loc, reads, optimal_clustering, CM)
+    ct  = clustertable(rt, chrom, loc, reads, optimal_clustering, CM; peakname=PeakName, category=Category)
     mct = modclustertable_5mC(chrom, loc, reads, optimal_clustering; unifystrand=unify_gc_strand) 
 
 
-    ( ; chrom, peakloc, loc, reads, CM, optimal_clustering, readtable=rt, clustertable=ct, modclustertable=mct)                        
+    ( ; chrom, peakloc, loc, PeakName, Category, reads, CM, optimal_clustering, readtable=rt, clustertable=ct, modclustertable=mct)                        
 
 end
 
