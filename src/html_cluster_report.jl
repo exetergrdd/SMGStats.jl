@@ -64,27 +64,20 @@ function save_cluster_report_assets(clustering, asset_dir;
     
     # 7. 5mC Epigenetics: Volcano + Differential Heatmap + Single-Molecule 5mC at Diff Sites (SVG)
     f_5mc = Figure(size=(1600, 360))
-    plot_5mC_volcano(clustering; f=f_5mc, axx=1, axy=1)
-    plot_5mC_diff_heat(clustering; f=f_5mc, axx=3, axy=1)
+    plot_5mC_volcano(clustering; f=f_5mc, axx=1, axy=1, pv_thresh=0.05)
+    plot_5mC_diff_heat(clustering; f=f_5mc, axx=3, axy=1, pv_thresh=0.05)
     
     sig_df = filter(r -> r.pvalue < 0.05, clustering.modclustertable)
     sig_pos = unique(sig_df.pos)
-    levels = sortperm(sortperm(clustering.optimal_clustering.optimal_model.assignments))
+    levels = read_plot_levels(clustering)
+    ax_mod = Axis(f_5mc[1, 5], title=isempty(sig_pos) ? "Single-Molecule 5mC (No sig sites)" : "Single-Molecule 5mC (Diff Sites in Red)", xgridvisible=false, ygridvisible=false)
+    modplot(clustering.chrom, clustering.loc, clustering.reads, levels; 
+            mod=:mod_5mC, f=f_5mc, ax=ax_mod, markersize=3, plotline=false, color=:grey75)
     if !isempty(sig_pos)
-        ax_mod = Axis(f_5mc[1, 5], title="Single-Molecule 5mC (Diff Sites in Red)", xgridvisible=false, ygridvisible=false)
-        # Background: all CpGs in subtle gray
-        modplot(clustering.chrom, clustering.loc, clustering.reads, levels; 
-                mod=:mod_5mC, f=f_5mc, ax=ax_mod, markersize=3, plotline=false, color=:grey75)
-        # Foreground: differential CpGs in vivid crimson
         modplot(clustering.chrom, clustering.loc, clustering.reads, levels; 
                 mod=:mod_5mC, f=f_5mc, ax=ax_mod, validpos=(Set(sig_pos), Set{Int}()), markersize=4.5, plotline=false, color=:crimson)
-        clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
-    else
-        ax_mod = Axis(f_5mc[1, 5], title="Single-Molecule 5mC (No sig sites)")
-        modplot(clustering.chrom, clustering.loc, clustering.reads, levels; 
-                mod=:mod_5mC, f=f_5mc, ax=ax_mod, markersize=3, plotline=false, color=:grey75)
-        clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
     end
+    clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
     cpg_path = joinpath(asset_dir, "5mC.svg")
     save(cpg_path, f_5mc)
     
@@ -118,6 +111,48 @@ function save_cluster_report_assets(clustering, asset_dir;
     )
 end
 
+function _format_or_ci_pv(ft; alpha::Float64=0.01)
+    pv = ft.fisher_bpv
+    is_skew = !isnan(pv) && pv < alpha
+    or_str = isinf(ft.or) ? "Inf" : (isnan(ft.or) ? "—" : string(round(ft.or, digits=2)))
+    ci_str = if !isfinite(ft.logor_se) || !isfinite(ft.or)
+        "—"
+    else
+        log_or = log(max(1e-6, ft.or))
+        ci_low  = round(exp(log_or - 1.96 * ft.logor_se), digits=2)
+        ci_high = round(exp(log_or + 1.96 * ft.logor_se), digits=2)
+        "$ci_low – $ci_high"
+    end
+    pv_str = isnan(pv) ? "—" : string(round(pv, sigdigits=3))
+    return (; or=or_str, ci=ci_str, pv=pv_str, is_skew=is_skew)
+end
+
+@inline _pval_badge(pv_str::AbstractString, is_skew::Bool) =
+    is_skew ? "<span class='status-pill status-alert'>p=$pv_str</span>" : "<span class='status-dim'>p=$pv_str</span>"
+
+@inline function _pval_badge(pv::Real; alpha::Float64=0.01)
+    isnan(pv) && return "—"
+    return _pval_badge(string(round(pv, sigdigits=3)), pv < alpha)
+end
+
+function _html_compact_table(headers::AbstractVector{<:AbstractString}, rows_html::AbstractVector{<:AbstractString}; 
+                             empty_msg::AbstractString="", margin_top::Bool=false, footer_html::AbstractString="")
+    isempty(rows_html) && !isempty(empty_msg) && return "<p class='text-dim'><em>$empty_msg</em></p>"
+    io = IOBuffer()
+    style = margin_top ? "overflow-x: auto; margin-top: 1rem;" : "overflow-x: auto;"
+    println(io, "<div style=\"$style\"><table class=\"compact-table\"><thead><tr>")
+    for h in headers
+        println(io, "  <th>$h</th>")
+    end
+    println(io, "</tr></thead><tbody>")
+    for r in rows_html
+        println(io, r)
+    end
+    println(io, "</tbody></table></div>")
+    !isempty(footer_html) && println(io, footer_html)
+    return String(take!(io))
+end
+
 """
     render_cluster_report(clustering, outdir; exondata=nothing, longest_only=true, label="", filename="report.html", catalog_path=nothing)
 
@@ -132,9 +167,10 @@ function render_cluster_report(clustering, outdir;
     phase_threshold=0.035,
     label="", 
     filename="report.html", 
-    catalog_path=nothing
+    catalog_path=nothing,
+    update_nrl::Bool=true
 )
-    update_clustering_nrl!(clustering; phase_threshold=phase_threshold)
+    update_nrl && update_clustering_nrl!(clustering; phase_threshold=phase_threshold)
     mkpath(outdir)
     asset_dir = joinpath(outdir, "assets")
     assets = save_cluster_report_assets(clustering, asset_dir; 
@@ -152,16 +188,17 @@ function render_cluster_report(clustering, outdir;
     flank_bp   = peak_start - loc_start
     total_reads = length(clustering.reads)
     opt_k      = clustering.optimal_clustering.optimal_k
+    rt         = clustering.readtable
     
-    # Annotate locus context if exondata provided
+    # Annotate target peak context if exondata provided
     annot = if !isnothing(exondata)
-        annotate_locus(exondata, chrom, clustering.loc)
+        annotate_locus(exondata, chrom, clustering.peakloc)
     else
         (; nearest_gene="Unannotated", nearest_gene_id="", gene_type="", tss_distance=0, context="Genomic Region", transcripts=TranscriptModel[])
     end
     
     # Total reads per cluster
-    cluster_counts = [count(clustering.readtable.cluster .== k) for k in 1:opt_k]
+    cluster_counts = [count(rt.cluster .== k) for k in 1:opt_k]
     
     # Check for biologically notable flags
     has_open_cluster = any(clustering.clustertable.proportion_has_fire .> 0.25)
@@ -169,91 +206,57 @@ function render_cluster_report(clustering, outdir;
     
     # Strand Fisher tests per cluster
     has_strand_skew = false
-    strand_table_rows = []
-    if opt_k > 1 && hasproperty(clustering.readtable, :strand) && length(unique(clustering.readtable.strand)) > 1
+    strand_by_cluster = Dict{Int, NamedTuple}()
+    if opt_k > 1 && hasproperty(rt, :strand) && length(unique(rt.strand)) > 1
+        is_pos = rt.strand .== true
         for k in 1:opt_k
-            is_k = clustering.readtable.cluster .== k
-            is_pos = clustering.readtable.strand .== true
-            ft = fisher(is_k, is_pos)
+            is_k = rt.cluster .== k
+            fmt = _format_or_ci_pv(fisher(is_k, is_pos))
             n_pos = count(is_k .& is_pos)
             n_neg = count(is_k .& .!is_pos)
             tot_k = cluster_counts[k]
             pct_pos = tot_k > 0 ? round(n_pos / tot_k * 100, digits=1) : 0.0
-            pv = ft.fisher_bpv
-            if !isnan(pv) && pv < 0.01
-                has_strand_skew = true
-            end
-            or_str = isinf(ft.or) ? "Inf" : string(round(ft.or, digits=2))
-            ci_low = isinf(ft.logor_se) ? "—" : string(round(exp(log(max(1e-6, ft.or)) - 1.96 * ft.logor_se), digits=2))
-            ci_high = isinf(ft.logor_se) ? "—" : string(round(exp(log(max(1e-6, ft.or)) + 1.96 * ft.logor_se), digits=2))
-            push!(strand_table_rows, (;
-                cluster = k,
-                tot = tot_k,
-                pos = n_pos,
-                neg = n_neg,
-                pct_pos = pct_pos,
-                or = or_str,
-                ci = "$ci_low – $ci_high",
-                pv = isnan(pv) ? "—" : string(round(pv, sigdigits=3)),
-                is_skew = (!isnan(pv) && pv < 0.01)
-            ))
+            has_strand_skew |= fmt.is_skew
+            strand_by_cluster[k] = (; cluster=k, tot=tot_k, pos=n_pos, neg=n_neg, pct_pos=pct_pos, fmt...)
         end
     end
     
     # Haplotype Fisher tests per cluster
     has_hap_skew = false
-    hap_table_rows = []
-    if opt_k > 1 && hasproperty(clustering.readtable, :hap) && any(clustering.readtable.hap .== 1) && any(clustering.readtable.hap .== 2)
-        hap_mask = (clustering.readtable.hap .== 1) .| (clustering.readtable.hap .== 2)
+    hap_by_cluster = Dict{Int, NamedTuple}()
+    if opt_k > 1 && hasproperty(rt, :hap) && any(rt.hap .== 1) && any(rt.hap .== 2)
+        hap_mask = (rt.hap .== 1) .| (rt.hap .== 2)
         if count(hap_mask) >= 10
-            sub_clust = clustering.readtable.cluster[hap_mask]
-            sub_hap = clustering.readtable.hap[hap_mask] .== 1
+            sub_clust = rt.cluster[hap_mask]
+            sub_hap = rt.hap[hap_mask] .== 1
             for k in 1:opt_k
-                is_k = sub_clust .== k
-                ft = fisher(is_k, sub_hap)
+                fmt = _format_or_ci_pv(fisher(sub_clust .== k, sub_hap))
                 tot_k = cluster_counts[k]
-                n_h1 = count(clustering.readtable.cluster .== k .&& clustering.readtable.hap .== 1)
-                n_h2 = count(clustering.readtable.cluster .== k .&& clustering.readtable.hap .== 2)
-                n_h0 = count(clustering.readtable.cluster .== k .&& clustering.readtable.hap .== 0)
+                n_h1 = count((rt.cluster .== k) .& (rt.hap .== 1))
+                n_h2 = count((rt.cluster .== k) .& (rt.hap .== 2))
+                n_h0 = count((rt.cluster .== k) .& (rt.hap .== 0))
                 phased_tot = n_h1 + n_h2
                 pct_h1 = phased_tot > 0 ? round(n_h1 / phased_tot * 100, digits=1) : 0.0
-                pv = ft.fisher_bpv
-                if !isnan(pv) && pv < 0.01
-                    has_hap_skew = true
-                end
-                or_str = isinf(ft.or) ? "Inf" : string(round(ft.or, digits=2))
-                ci_low = isinf(ft.logor_se) ? "—" : string(round(exp(log(max(1e-6, ft.or)) - 1.96 * ft.logor_se), digits=2))
-                ci_high = isinf(ft.logor_se) ? "—" : string(round(exp(log(max(1e-6, ft.or)) + 1.96 * ft.logor_se), digits=2))
-                push!(hap_table_rows, (;
-                    cluster = k,
-                    tot = tot_k,
-                    h1 = n_h1,
-                    h2 = n_h2,
-                    h0 = n_h0,
-                    pct_h1 = pct_h1,
-                    or = or_str,
-                    ci = "$ci_low – $ci_high",
-                    pv = isnan(pv) ? "—" : string(round(pv, sigdigits=3)),
-                    is_skew = (!isnan(pv) && pv < 0.01)
-                ))
+                has_hap_skew |= fmt.is_skew
+                hap_by_cluster[k] = (; cluster=k, tot=tot_k, h1=n_h1, h2=n_h2, h0=n_h0, pct_h1=pct_h1, fmt...)
             end
         end
     end
     
     # Sample Fisher tests per cluster
     has_sample_skew = false
-    sample_table_rows = []
-    samples = hasproperty(clustering.readtable, :sample) ? unique(clustering.readtable.sample) : String[]
+    sample_by_cluster = Dict{Int, NamedTuple}()
+    samples = hasproperty(rt, :sample) ? unique(rt.sample) : String[]
     if opt_k > 1 && length(samples) >= 2
         for k in 1:opt_k
+            is_k = rt.cluster .== k
             best_pv = 1.0
             best_s = first(samples)
             best_ft = nothing
             best_n_s = 0
             
             for s in samples
-                is_k = clustering.readtable.cluster .== k
-                is_s = clustering.readtable.sample .== s
+                is_s = rt.sample .== s
                 ft = fisher(is_k, is_s)
                 if !isnan(ft.fisher_bpv) && ft.fisher_bpv <= best_pv
                     best_pv = ft.fisher_bpv
@@ -264,57 +267,19 @@ function render_cluster_report(clustering, outdir;
             end
             
             if !isnothing(best_ft)
-                pv = best_ft.fisher_bpv
-                if !isnan(pv) && pv < 0.01
-                    has_sample_skew = true
-                end
+                fmt = _format_or_ci_pv(best_ft)
                 tot_k = cluster_counts[k]
                 pct_s = tot_k > 0 ? round(best_n_s / tot_k * 100, digits=1) : 0.0
-                or_str = isinf(best_ft.or) ? "Inf" : string(round(best_ft.or, digits=2))
-                ci_low = isinf(best_ft.logor_se) ? "—" : string(round(exp(log(max(1e-6, best_ft.or)) - 1.96 * best_ft.logor_se), digits=2))
-                ci_high = isinf(best_ft.logor_se) ? "—" : string(round(exp(log(max(1e-6, best_ft.or)) + 1.96 * best_ft.logor_se), digits=2))
-                
-                push!(sample_table_rows, (;
-                    cluster = k,
-                    tot = tot_k,
-                    top_sample = string(best_s),
-                    count_sample = best_n_s,
-                    pct_sample = pct_s,
-                    or = or_str,
-                    ci = "$ci_low – $ci_high",
-                    pv = isnan(pv) ? "—" : string(round(pv, sigdigits=3)),
-                    is_skew = (!isnan(pv) && pv < 0.01)
-                ))
+                has_sample_skew |= fmt.is_skew
+                sample_by_cluster[k] = (; cluster=k, tot=tot_k, top_sample=string(best_s), count_sample=best_n_s, pct_sample=pct_s, fmt...)
             end
         end
     end
     
     # 1. Format compact cluster properties table HTML
-    ct_buf = IOBuffer()
-    println(ct_buf, """
-    <div style="overflow-x: auto;">
-    <table class="compact-table">
-    <thead>
-      <tr>
-        <th>Cluster</th>
-        <th>Reads</th>
-        <th>Mean Cost</th>
-        <th>Length (bp)</th>
-        <th>FIRE (%)</th>
-        <th>6mA (%)</th>
-        <th>5mC (%)</th>
-        <th>FIRE NRL (bp)</th>
-        <th>6mA NRL (bp)</th>
-        <th>Phasing</th>
-        <th>Status</th>
-        <th>Strand Bias</th>
-        <th>Allelic Bias</th>
-        <th>Sample Bias</th>
-      </tr>
-    </thead>
-    <tbody>
-    """)
-    for (k, row) in enumerate(eachrow(clustering.clustertable))
+    ct_rows = String[]
+    for row in eachrow(clustering.clustertable)
+        cid = row.cluster
         fire_nrl_str = ismissing(row.nrl) ? "—" : string(row.nrl)
         nrl_6mA_val = hasproperty(row, :nrl_6mA) ? row.nrl_6mA : missing
         nrl_6mA_str = ismissing(nrl_6mA_val) ? "—" : string(nrl_6mA_val)
@@ -323,44 +288,28 @@ function render_cluster_report(clustering, outdir;
             "<span class='status-pill status-closed'>Periodic</span>" : 
             "<span class='status-pill status-open'>Open</span>"
             
-        strand_badge = "—"
-        if !isempty(strand_table_rows) && k <= length(strand_table_rows)
-            st = strand_table_rows[k]
-            strand_badge = st.is_skew ? "<span class='status-pill status-alert'>p=$(st.pv)</span>" : "<span class='status-dim'>p=$(st.pv)</span>"
-        elseif hasproperty(row, :strand_pvalue) && !isnan(row.strand_pvalue)
-            pv = row.strand_pvalue
-            strand_badge = (pv < 0.01) ? "<span class='status-pill status-alert'>p=$(round(pv, sigdigits=3))</span>" : "<span class='status-dim'>p=$(round(pv, sigdigits=3))</span>"
-        end
+        strand_badge = haskey(strand_by_cluster, cid) ? 
+            _pval_badge(strand_by_cluster[cid].pv, strand_by_cluster[cid].is_skew) :
+            (hasproperty(row, :strand_pvalue) ? _pval_badge(row.strand_pvalue) : "—")
 
-        hap_badge = "—"
-        if !isempty(hap_table_rows) && k <= length(hap_table_rows)
-            ht = hap_table_rows[k]
-            hap_badge = ht.is_skew ? "<span class='status-pill status-alert'>p=$(ht.pv)</span>" : "<span class='status-dim'>p=$(ht.pv)</span>"
-        elseif hasproperty(row, :hap_pvalue) && !isnan(row.hap_pvalue)
-            pv = row.hap_pvalue
-            hap_badge = (pv < 0.01) ? "<span class='status-pill status-alert'>p=$(round(pv, sigdigits=3))</span>" : "<span class='status-dim'>p=$(round(pv, sigdigits=3))</span>"
-        end
+        hap_badge = haskey(hap_by_cluster, cid) ? 
+            _pval_badge(hap_by_cluster[cid].pv, hap_by_cluster[cid].is_skew) :
+            (hasproperty(row, :hap_pvalue) ? _pval_badge(row.hap_pvalue) : "—")
 
-        sample_badge = "—"
-        if !isempty(sample_table_rows) && k <= length(sample_table_rows)
-            s_t = sample_table_rows[k]
-            sample_badge = s_t.is_skew ? "<span class='status-pill status-alert'>p=$(s_t.pv)</span>" : "<span class='status-dim'>p=$(s_t.pv)</span>"
-        elseif hasproperty(row, :sample_pvalue) && !isnan(row.sample_pvalue)
-            pv = row.sample_pvalue
-            sample_badge = (pv < 0.01) ? "<span class='status-pill status-alert'>p=$(round(pv, sigdigits=3))</span>" : "<span class='status-dim'>p=$(round(pv, sigdigits=3))</span>"
-        end
+        sample_badge = haskey(sample_by_cluster, cid) ? 
+            _pval_badge(sample_by_cluster[cid].pv, sample_by_cluster[cid].is_skew) :
+            (hasproperty(row, :sample_pvalue) ? _pval_badge(row.sample_pvalue) : "—")
 
-        c_reads = hasproperty(row, :totalreads) ? row.totalreads : (hasproperty(row, :count) ? row.count : (k <= length(cluster_counts) ? cluster_counts[k] : row.counts_sample))
+        c_reads = hasproperty(row, :totalreads) ? row.totalreads : (hasproperty(row, :count) ? row.count : (1 <= cid <= length(cluster_counts) ? cluster_counts[cid] : row.counts_sample))
 
-        phasing_fire = round(row.phasing_score, digits=3)
-        phasing_str = string(phasing_fire)
-        if hasproperty(row, :phasing_score_6mA) && !isnan(row.phasing_score_6mA)
+        phasing_str = isfinite(row.phasing_score) ? string(round(row.phasing_score, digits=3)) : "—"
+        if hasproperty(row, :phasing_score_6mA) && isfinite(row.phasing_score_6mA)
             phasing_str *= " / " * string(round(row.phasing_score_6mA, digits=3))
         end
 
-        println(ct_buf, """
+        push!(ct_rows, """
         <tr>
-          <td><strong>$(row.cluster)</strong></td>
+          <td><strong>$cid</strong></td>
           <td><strong>$c_reads</strong></td>
           <td>$(round(row.meancost, digits=2))</td>
           <td>$(round(Int, row.mean_readlength))</td>
@@ -374,189 +323,73 @@ function render_cluster_report(clustering, outdir;
           <td>$strand_badge</td>
           <td>$hap_badge</td>
           <td>$sample_badge</td>
-        </tr>
-        """)
+        </tr>""")
     end
-    println(ct_buf, "</tbody></table></div>")
-    clustertable_html = String(take!(ct_buf))
+    clustertable_html = _html_compact_table(
+        ["Cluster", "Reads", "Mean Cost", "Length (bp)", "FIRE (%)", "6mA (%)", "5mC (%)", "FIRE NRL (bp)", "6mA NRL (bp)", "Phasing", "Status", "Strand Bias", "Allelic Bias", "Sample Bias"],
+        ct_rows
+    )
     
     # 2. Format Strand Fisher table HTML
-    strand_table_html = if !isempty(strand_table_rows)
-        sbuf = IOBuffer()
-        println(sbuf, """
-        <div style="overflow-x: auto; margin-top: 1rem;">
-        <table class="compact-table">
-        <thead>
-          <tr>
-            <th>Cluster</th>
-            <th>Total Reads</th>
-            <th>(+) Strand</th>
-            <th>(-) Strand</th>
-            <th>% (+) Strand</th>
-            <th>Odds Ratio</th>
-            <th>95% CI</th>
-            <th>Fisher p-value</th>
-            <th>Assessment</th>
-          </tr>
-        </thead>
-        <tbody>
-        """)
-        for r in strand_table_rows
-            eval_pill = r.is_skew ? 
-                "<span class='status-pill status-alert'>Strand Skew (p < 0.01)</span>" : 
-                "<span class='status-pill status-open'>Balanced</span>"
-            println(sbuf, """
-            <tr>
-              <td><strong>$(r.cluster)</strong></td>
-              <td>$(r.tot)</td>
-              <td>$(r.pos)</td>
-              <td>$(r.neg)</td>
-              <td>$(r.pct_pos)%</td>
-              <td>$(r.or)</td>
-              <td>$(r.ci)</td>
-              <td>$(r.pv)</td>
-              <td>$eval_pill</td>
-            </tr>
-            """)
-        end
-        println(sbuf, "</tbody></table></div>")
-        String(take!(sbuf))
-    else
-        "<p class='text-dim'><em>Strand metadata not available or locus has only 1 cluster.</em></p>"
-    end
+    strand_rows_html = [
+        begin
+            r = strand_by_cluster[k]
+            eval_pill = r.is_skew ? "<span class='status-pill status-alert'>Strand Skew (p < 0.01)</span>" : "<span class='status-pill status-open'>Balanced</span>"
+            "<tr><td><strong>$(r.cluster)</strong></td><td>$(r.tot)</td><td>$(r.pos)</td><td>$(r.neg)</td><td>$(r.pct_pos)%</td><td>$(r.or)</td><td>$(r.ci)</td><td>$(r.pv)</td><td>$eval_pill</td></tr>"
+        end for k in sort!(collect(keys(strand_by_cluster)))
+    ]
+    strand_table_html = _html_compact_table(
+        ["Cluster", "Total Reads", "(+) Strand", "(-) Strand", "% (+) Strand", "Odds Ratio", "95% CI", "Fisher p-value", "Assessment"],
+        strand_rows_html;
+        empty_msg="Strand metadata not available or locus has only 1 cluster.",
+        margin_top=true
+    )
 
     # 3. Format Haplotype Fisher table HTML
-    hap_table_html = if !isempty(hap_table_rows)
-        hbuf = IOBuffer()
-        println(hbuf, """
-        <div style="overflow-x: auto; margin-top: 1rem;">
-        <table class="compact-table">
-        <thead>
-          <tr>
-            <th>Cluster</th>
-            <th>Total Reads</th>
-            <th>Hap 1</th>
-            <th>Hap 2</th>
-            <th>Unphased (0)</th>
-            <th>Hap 1 / (Hap 1 + 2)</th>
-            <th>Odds Ratio</th>
-            <th>95% CI</th>
-            <th>Fisher p-value</th>
-            <th>Assessment</th>
-          </tr>
-        </thead>
-        <tbody>
-        """)
-        for r in hap_table_rows
-            eval_pill = r.is_skew ? 
-                "<span class='status-pill status-alert'>Allelic Skew (p < 0.01)</span>" : 
-                "<span class='status-pill status-open'>Biallelic</span>"
-            println(hbuf, """
-            <tr>
-              <td><strong>$(r.cluster)</strong></td>
-              <td>$(r.tot)</td>
-              <td>$(r.h1)</td>
-              <td>$(r.h2)</td>
-              <td>$(r.h0)</td>
-              <td>$(r.pct_h1)%</td>
-              <td>$(r.or)</td>
-              <td>$(r.ci)</td>
-              <td>$(r.pv)</td>
-              <td>$eval_pill</td>
-            </tr>
-            """)
-        end
-        println(hbuf, "</tbody></table></div>")
-        String(take!(hbuf))
-    else
-        "<p class='text-dim'><em>Haplotype phase information not available or insufficient heterozygous SNVs.</em></p>"
-    end
+    hap_rows_html = [
+        begin
+            r = hap_by_cluster[k]
+            eval_pill = r.is_skew ? "<span class='status-pill status-alert'>Allelic Skew (p < 0.01)</span>" : "<span class='status-pill status-open'>Biallelic</span>"
+            "<tr><td><strong>$(r.cluster)</strong></td><td>$(r.tot)</td><td>$(r.h1)</td><td>$(r.h2)</td><td>$(r.h0)</td><td>$(r.pct_h1)%</td><td>$(r.or)</td><td>$(r.ci)</td><td>$(r.pv)</td><td>$eval_pill</td></tr>"
+        end for k in sort!(collect(keys(hap_by_cluster)))
+    ]
+    hap_table_html = _html_compact_table(
+        ["Cluster", "Total Reads", "Hap 1", "Hap 2", "Unphased (0)", "Hap 1 / (Hap 1 + 2)", "Odds Ratio", "95% CI", "Fisher p-value", "Assessment"],
+        hap_rows_html;
+        empty_msg="Haplotype phase information not available or insufficient heterozygous SNVs.",
+        margin_top=true
+    )
 
     # 4. Format Sample Representation Fisher table HTML
-    sample_table_html = if !isempty(sample_table_rows)
-        sbuf = IOBuffer()
-        println(sbuf, """
-        <div style="overflow-x: auto; margin-top: 1rem;">
-        <table class="compact-table">
-        <thead>
-          <tr>
-            <th>Cluster</th>
-            <th>Total Reads</th>
-            <th>Top Enriched Sample</th>
-            <th>Sample Reads</th>
-            <th>Sample Share (%)</th>
-            <th>Odds Ratio</th>
-            <th>95% CI</th>
-            <th>Fisher p-value</th>
-            <th>Assessment</th>
-          </tr>
-        </thead>
-        <tbody>
-        """)
-        for r in sample_table_rows
-            eval_pill = r.is_skew ? 
-                "<span class='status-pill status-alert'>Sample Bias (p < 0.01)</span>" : 
-                "<span class='status-pill status-open'>Balanced</span>"
-            println(sbuf, """
-            <tr>
-              <td><strong>$(r.cluster)</strong></td>
-              <td>$(r.tot)</td>
-              <td><code>$(r.top_sample)</code></td>
-              <td>$(r.count_sample)</td>
-              <td>$(r.pct_sample)%</td>
-              <td>$(r.or)</td>
-              <td>$(r.ci)</td>
-              <td>$(r.pv)</td>
-              <td>$eval_pill</td>
-            </tr>
-            """)
-        end
-        println(sbuf, "</tbody></table></div>")
-        String(take!(sbuf))
-    else
-        "<p class='text-dim'><em>Sample representation metadata not available or locus has only 1 cluster / 1 sample.</em></p>"
-    end
+    sample_rows_html = [
+        begin
+            r = sample_by_cluster[k]
+            eval_pill = r.is_skew ? "<span class='status-pill status-alert'>Sample Bias (p < 0.01)</span>" : "<span class='status-pill status-open'>Balanced</span>"
+            "<tr><td><strong>$(r.cluster)</strong></td><td>$(r.tot)</td><td><code>$(r.top_sample)</code></td><td>$(r.count_sample)</td><td>$(r.pct_sample)%</td><td>$(r.or)</td><td>$(r.ci)</td><td>$(r.pv)</td><td>$eval_pill</td></tr>"
+        end for k in sort!(collect(keys(sample_by_cluster)))
+    ]
+    sample_table_html = _html_compact_table(
+        ["Cluster", "Total Reads", "Top Enriched Sample", "Sample Reads", "Sample Share (%)", "Odds Ratio", "95% CI", "Fisher p-value", "Assessment"],
+        sample_rows_html;
+        empty_msg="Sample representation metadata not available or locus has only 1 cluster / 1 sample.",
+        margin_top=true
+    )
 
-    # Format top differentially methylated CpGs table
-    mct_buf = IOBuffer()
-    sig_cpgs = filter(r -> r.pvalue < 0.05, clustering.modclustertable)
-    if nrow(sig_cpgs) > 0
-        println(mct_buf, """
-        <div style="overflow-x: auto;">
-        <table class="compact-table">
-        <thead>
-          <tr>
-            <th>Pos</th>
-            <th>Cluster</th>
-            <th>Cluster Rate</th>
-            <th>Background Rate</th>
-            <th>Coverage</th>
-            <th>p-value (Binomial)</th>
-          </tr>
-        </thead>
-        <tbody>
-        """)
-        for row in eachrow(sig_cpgs[1:min(15, nrow(sig_cpgs)), :])
+    # 5. Format top differentially methylated CpGs table (sorted by most significant p-value)
+    sig_cpgs = sort(filter(r -> r.pvalue < 0.05, clustering.modclustertable), :pvalue)
+    cpg_rows_html = [
+        begin
             cov = hasproperty(row, :total) ? row.total : (hasproperty(row, :depth) ? row.depth : (row.mod + row.unmod))
-            println(mct_buf, """
-            <tr>
-              <td><code>$(row.pos)</code></td>
-              <td>$(row.cluster)</td>
-              <td>$(round(row.rate * 100, digits=1))%</td>
-              <td>$(round(row.total_rate * 100, digits=1))%</td>
-              <td>$cov</td>
-              <td>$(string(round(row.pvalue, sigdigits=3)))</td>
-            </tr>
-            """)
-        end
-        println(mct_buf, "</tbody></table></div>")
-        if nrow(sig_cpgs) > 15
-            println(mct_buf, "<small style='color: var(--text-dim);'>Showing top 15 of $(nrow(sig_cpgs)) significant CpG sites (p < 0.05)</small>")
-        end
-    else
-        println(mct_buf, "<p class='text-dim'><em>No single-CpG sites reached p < 0.05 differential methylation.</em></p>")
-    end
-    cpg_table_html = String(take!(mct_buf))
+            "<tr><td><code>$(row.pos)</code></td><td>$(row.cluster)</td><td>$(round(row.rate * 100, digits=1))%</td><td>$(round(row.total_rate * 100, digits=1))%</td><td>$cov</td><td>$(string(round(row.pvalue, sigdigits=3)))</td></tr>"
+        end for row in eachrow(sig_cpgs[1:min(15, nrow(sig_cpgs)), :])
+    ]
+    cpg_footer = nrow(sig_cpgs) > 15 ? "<small style='color: var(--text-dim);'>Showing top 15 of $(nrow(sig_cpgs)) significant CpG sites (p < 0.05)</small>" : ""
+    cpg_table_html = _html_compact_table(
+        ["Pos", "Cluster", "Cluster Rate", "Background Rate", "Coverage", "p-value (Binomial)"],
+        cpg_rows_html;
+        empty_msg="No single-CpG sites reached p < 0.05 differential methylation.",
+        footer_html=cpg_footer
+    )
     
     # Distance formatting
     tss_dist_str = if annot.tss_distance < 0
