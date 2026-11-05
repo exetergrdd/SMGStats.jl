@@ -119,13 +119,13 @@ function featurematrix(loc, reads::Vector{ModAllFireRead}; features=(:fire, :mod
             end
         end
         
-        do_mod_6mA    && inc_positions!(mat_6mA,   r.mods_6mA,     l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun)
-        do_unmod_6mA  && inc_positions!(umat_6mA,  r.un_mods_6mA,  l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun)
+        do_mod_6mA    && inc_positions!(mat_6mA,   r.mods_6mA,    l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun)
+        do_unmod_6mA  && inc_positions!(umat_6mA,  r.unmods_6mA,  l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun)
         
-        do_mod_5mC    && inc_positions!(mat_5mC,   r.mods_5mC,     l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun, strand=r.strand, decrement_neg=unify_gc_strand)
-        do_unmod_5mC  && inc_positions!(umat_5mC,  r.un_mods_5mC,  l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun, strand=r.strand, decrement_neg=unify_gc_strand)
-        do_mod_5hmC   && inc_positions!(mat_5hmC,  r.mods_5hmC,    l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun, strand=r.strand, decrement_neg=unify_gc_strand)
-        do_unmod_5hmC && inc_positions!(umat_5hmC, r.un_mods_5hmC, l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun, strand=r.strand, decrement_neg=unify_gc_strand)
+        do_mod_5mC    && inc_positions!(mat_5mC,   r.mods_5mC,    l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun, strand=r.strand, decrement_neg=unify_gc_strand)
+        do_unmod_5mC  && inc_positions!(umat_5mC,  r.unmods_5mC,  l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun, strand=r.strand, decrement_neg=unify_gc_strand)
+        do_mod_5hmC   && inc_positions!(mat_5hmC,  r.mods_5hmC,   l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun, strand=r.strand, decrement_neg=unify_gc_strand)
+        do_unmod_5hmC && inc_positions!(umat_5hmC, r.unmods_5hmC, l, loc_first, n, weight=weight_mod, incfun=mod_inc_fun, strand=r.strand, decrement_neg=unify_gc_strand)
     end
     
     # --- 3. Smoothing and Binning Phase ---
@@ -720,6 +720,7 @@ function select_k_kmeans_bic(M::Matrix{Float64}, ks::AbstractVector{Int}; max_k_
 end
 
 
+
 ###### Results tables
 function clustercenters(M, model)
     centers = zeros(Float64, size(M, 1), length(model.counts))
@@ -735,6 +736,9 @@ function characterise_nucleosomes_spectral!(ac_signal::AbstractVector{Float64}, 
                                            phase_threshold=0.035, n = length(ac_signal), detrended = zeros(Float64, n))
     
     n = length(ac_signal)
+    if n < 2 || length(lags) < 2 || any(isnan, ac_signal)
+        return (; nrl=missing, phasing_score=NaN, is_closed=false, peak_type=:none)
+    end
     lags_rel = first(lags) == 0 ? lags : (lags .- first(lags))
     
     # 1. Detrend the signal to remove the global exponential decay.
@@ -743,7 +747,7 @@ function characterise_nucleosomes_spectral!(ac_signal::AbstractVector{Float64}, 
     detrended .= 0
     
     # Estimate how many bins make up ~160bp dynamically based on the lags array
-    dx_approx = lags_rel[2] - lags_rel[1]
+    dx_approx = max(1, lags_rel[2] - lags_rel[1])
     half_w = max(1, round(Int, 160 / dx_approx) ÷ 2)
     
     @inbounds for i in 1:n
@@ -791,6 +795,9 @@ function characterise_nucleosomes_spectral!(ac_signal::AbstractVector{Float64}, 
     # axislegend()
     # # display(f)
     
+    if !isfinite(best_score)
+        return (; nrl=missing, phasing_score=NaN, is_closed=false, peak_type=:none)
+    end
     is_closed = best_score > phase_threshold
     
     # 3. Determine if the 2N harmonic is dominant
@@ -811,6 +818,29 @@ function characterise_nucleosomes_spectral!(ac_signal::AbstractVector{Float64}, 
               peak_type=peak_type)
 end
 
+function _spectral_nrl_columns(featmat, feature::Symbol, n_cols::Int; M=featmat.M, phase_threshold::Float64=0.035)
+    if !(feature in featmat.features) || n_cols == 0 || length(featmat.ldx) < 3
+        return (;
+            nrl = Vector{Union{Missing, Int}}(missing, n_cols),
+            phasing_score = fill(NaN, n_cols),
+            is_closed = fill(false, n_cols),
+            peak_type = fill(:none, n_cols),
+        )
+    end
+    FM = featureblock(featmat, feature; M=M)
+    n_lags = size(FM, 1) - 1
+    A = autocor(FM, 1:n_lags)
+    detrended = Vector{Float64}(undef, n_lags)
+    lags = featmat.ldx[1:n_lags] .- first(featmat.ldx)
+    nrls = [characterise_nucleosomes_spectral!(a, lags; detrended=detrended, phase_threshold=phase_threshold) for a in eachcol(A)]
+    return (;
+        nrl = Union{Missing, Int}[r.nrl for r in nrls],
+        phasing_score = Float64[r.phasing_score for r in nrls],
+        is_closed = Bool[r.is_closed for r in nrls],
+        peak_type = Symbol[r.peak_type for r in nrls],
+    )
+end
+
 function interval_count(data, loc)
     start = max(data[1], first(loc))
     stop = min(data[2], last(loc))
@@ -818,6 +848,8 @@ function interval_count(data, loc)
     max(stop - start + 1, 0)
 end
 
+@inline _in_loc_gc(p::Int, strand::Bool, unifystrand::Bool, loc::UnitRange{Int}) =
+    ((strand || !unifystrand) ? p : p - 1) ∈ loc
 
 
 """
@@ -846,46 +878,25 @@ function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire,
     total_unmod_6mA = [sum((p ∈ loc for p in r.unmods_6mA); init=0) for r in reads]
     rate_mod_6mA = total_mod_6mA./(total_mod_6mA .+ total_unmod_6mA)
     
-    total_mod_5mC   = [sum((p ∈ loc for p in r.mods_5mC); init=0) for r in reads]
-    total_unmod_5mC = [sum((p ∈ loc for p in r.unmods_5mC); init=0) for r in reads]
+    total_mod_5mC   = [sum((_in_loc_gc(p, r.strand, unifystrand, loc) for p in r.mods_5mC); init=0) for r in reads]
+    total_unmod_5mC = [sum((_in_loc_gc(p, r.strand, unifystrand, loc) for p in r.unmods_5mC); init=0) for r in reads]
     rate_mod_5mC = total_mod_5mC./(total_mod_5mC .+ total_unmod_5mC)
     
-    total_mod_5hmC   = [sum((p ∈ loc for p in r.mods_5hmC); init=0) for r in reads]
-    total_unmod_5hmC = [sum((p ∈ loc for p in r.unmods_5hmC); init=0) for r in reads]
+    total_mod_5hmC   = [sum((_in_loc_gc(p, r.strand, unifystrand, loc) for p in r.mods_5hmC); init=0) for r in reads]
+    total_unmod_5hmC = [sum((_in_loc_gc(p, r.strand, unifystrand, loc) for p in r.unmods_5hmC); init=0) for r in reads]
     rate_mod_5hmC = total_mod_5hmC./(total_mod_5hmC .+ total_unmod_5hmC)
     
     total_msp  = [sum((interval_count(m, loc) for m in r.msps if m[3] <= 0.9*255); init=0) for r in reads]
     total_fire = [sum((interval_count(m, loc) for m in r.msps if m[3]  > 0.9*255); init=0) for r in reads]
-    total_nuc  = [sum(interval_count(m, loc) for m in r.nucs) for r in reads]
+    total_nuc  = [sum((interval_count(m, loc) for m in r.nucs); init=0) for r in reads]
     
     rate_msp = total_msp./readlength
     rate_fire = total_fire./readlength
     rate_nuc = total_nuc./readlength
     
-    ### read level nrls (FIRE)
-    FM = featureblock(featmat, nrl_feature)
-    A = autocor(FM, 1:(size(FM, 1)-1))
-    detrended = Vector{Float64}(undef, size(FM, 1) - 1)
-    lags = featmat.ldx[1:end-1] .- first(featmat.ldx)
-    
-    nrls = [characterise_nucleosomes_spectral!(a, lags, detrended=detrended) for a in eachcol(A)]
-    
-    ### read level nrls (6mA)
-    nrl_6mA_vals = fill(missing, n)
-    phasing_score_6mA_vals = fill(NaN, n)
-    is_closed_6mA_vals = fill(false, n)
-    peak_type_6mA_vals = fill(:none, n)
-
-    if :mod_6mA in featmat.features
-        FM_6mA = featureblock(featmat, :mod_6mA)
-        A_6mA = autocor(FM_6mA, 1:(size(FM_6mA, 1)-1))
-        detrended_6mA = Vector{Float64}(undef, size(FM_6mA, 1) - 1)
-        nrls_6mA = [characterise_nucleosomes_spectral!(a, lags, detrended=detrended_6mA) for a in eachcol(A_6mA)]
-        nrl_6mA_vals = [n.nrl for n in nrls_6mA]
-        phasing_score_6mA_vals = [n.phasing_score for n in nrls_6mA]
-        is_closed_6mA_vals = [n.is_closed for n in nrls_6mA]
-        peak_type_6mA_vals = [n.peak_type for n in nrls_6mA]
-    end
+    ### read level nrls (FIRE & 6mA)
+    nrls_fire = _spectral_nrl_columns(featmat, nrl_feature, n)
+    nrls_6mA  = _spectral_nrl_columns(featmat, :mod_6mA, n)
 
     index = 1:n
     (; index, cluster, cost, max_assignment_entropy,
@@ -906,23 +917,23 @@ function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire,
         rate_fire,
         rate_nuc,
         has_fire = rate_fire .> 0,
-        nrl=[n.nrl for n in nrls],
-        phasing_score=[n.phasing_score for n in nrls],
-        phasing_implies_closed=[n.is_closed for n in nrls],
-        phasing_peak_type=[n.peak_type for n in nrls],
-        nrl_fire=[n.nrl for n in nrls],
-        phasing_score_fire=[n.phasing_score for n in nrls],
-        phasing_implies_closed_fire=[n.is_closed for n in nrls],
-        phasing_peak_type_fire=[n.peak_type for n in nrls],
-        nrl_6mA=nrl_6mA_vals,
-        phasing_score_6mA=phasing_score_6mA_vals,
-        phasing_implies_closed_6mA=is_closed_6mA_vals,
-        phasing_peak_type_6mA=peak_type_6mA_vals) |> DataFrame
+        nrl=nrls_fire.nrl,
+        phasing_score=nrls_fire.phasing_score,
+        phasing_implies_closed=nrls_fire.is_closed,
+        phasing_peak_type=nrls_fire.peak_type,
+        nrl_fire=nrls_fire.nrl,
+        phasing_score_fire=nrls_fire.phasing_score,
+        phasing_implies_closed_fire=nrls_fire.is_closed,
+        phasing_peak_type_fire=nrls_fire.peak_type,
+        nrl_6mA=nrls_6mA.nrl,
+        phasing_score_6mA=nrls_6mA.phasing_score,
+        phasing_implies_closed_6mA=nrls_6mA.is_closed,
+        phasing_peak_type_6mA=nrls_6mA.peak_type) |> DataFrame
 end
 
 
-function filtmean(x, filtfun=ismissing)
-    total = sum(filtfun, x)
+function filtmean(x, filtfun = v -> ismissing(v) || (v isa Number && !isfinite(v)))
+    total = count(filtfun, x)
     (total == length(x)) && return missing
     
     mean(v for v in x if !filtfun(v))
@@ -955,7 +966,7 @@ strand skew, allele/haplotype skew, sample skew, and dual spectral nucleosome re
 for each discovered cluster in the locus.
 """
 function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire)
-    gdf = combine(groupby(readtable, :cluster),
+    gdf = combine(groupby(readtable, :cluster, sort=true),
         nrow => :totalreads,
         :cost => mean => :meancost,
         :max_assignment_entropy => mean => :mean_max_assignment_entropy,
@@ -970,9 +981,9 @@ function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_
         :rate_msp => mean => :mean_rate_msp_bp,
         :rate_fire => mean => :mean_rate_fire_bp,
         :has_fire => mean => :proportion_has_fire,
-        :nrl => (n -> sum(!ismissing, n)) => :total_valid_nrls,
-        :nrl => (n -> filtmean(n, ismissing)) => :mean_read_nrl,
-        :phasing_score => (p -> filtmean(p, isinf)) => :mean_read_phasing_score,
+        :nrl => (n -> count(!ismissing, n)) => :total_valid_nrls,
+        :nrl => filtmean => :mean_read_nrl,
+        :phasing_score => filtmean => :mean_read_phasing_score,
     )
     gdf.count = gdf.totalreads
     gdf.chrom = fill(chrom, nrow(gdf))
@@ -980,10 +991,10 @@ function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_
     gdf.stop  = fill(last(loc), nrow(gdf))
 
     if hasproperty(readtable, :nrl_6mA)
-        gdf_6mA = combine(groupby(readtable, :cluster),
-            :nrl_6mA => (n -> sum(!ismissing, n)) => :total_valid_nrls_6mA,
-            :nrl_6mA => (n -> filtmean(n, ismissing)) => :mean_read_nrl_6mA,
-            :phasing_score_6mA => (p -> filtmean(p, isinf)) => :mean_read_phasing_score_6mA,
+        gdf_6mA = combine(groupby(readtable, :cluster, sort=true),
+            :nrl_6mA => (n -> count(!ismissing, n)) => :total_valid_nrls_6mA,
+            :nrl_6mA => filtmean => :mean_read_nrl_6mA,
+            :phasing_score_6mA => filtmean => :mean_read_phasing_score_6mA,
         )
         gdf = leftjoin(gdf, gdf_6mA, on=:cluster)
     end
@@ -999,86 +1010,72 @@ function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_
     cluster_metrics.max_fire_depth = Int.(round.(clusterresult.optimal_model.counts .* cluster_metrics.max_fire_depth_rate))
     
     # Skew stats: Strand, Haplotype/Allele, Sample
-    strand_or = zeros(Float64, k)
-    strand_logor_se = zeros(Float64, k)
-    strand_pvalue = zeros(Float64, k)
+    strand_or = ones(Float64, k)
+    strand_logor_se = fill(NaN, k)
+    strand_pvalue = ones(Float64, k)
     
     hap_or = fill(NaN, k)
     hap_logor_se = fill(NaN, k)
     hap_pvalue = fill(NaN, k)
     
-    sample_or = fill(NaN, k)
+    sample_or = ones(Float64, k)
     sample_logor_se = fill(NaN, k)
-    sample_pvalue = fill(NaN, k)
-    sample_min_pvalue = fill(NaN, k)
+    sample_pvalue = ones(Float64, k)
+    sample_min_pvalue = ones(Float64, k)
     
-    for c in 1:k
-        if k > 1
+    if k > 1
+        for c in 1:k
             ft_s = fisher(readtable.cluster .== c, readtable.strand .== true)
             strand_or[c] = ft_s.or
             strand_logor_se[c] = ft_s.logor_se
             strand_pvalue[c] = ft_s.fisher_bpv
-        else
-            strand_or[c] = 1.0
-            strand_logor_se[c] = NaN
-            strand_pvalue[c] = 1.0
         end
-    end
     
-    if hasproperty(readtable, :hap) && k > 1
-        phased_mask = (readtable.hap .== 1) .| (readtable.hap .== 2)
-        if count(phased_mask) >= 10
-            sub_clust = readtable.cluster[phased_mask]
-            sub_hap1 = readtable.hap[phased_mask] .== 1
-            for c in 1:k
-                ft_h = fisher(sub_clust .== c, sub_hap1)
-                hap_or[c] = ft_h.or
-                hap_logor_se[c] = ft_h.logor_se
-                hap_pvalue[c] = ft_h.fisher_bpv
-            end
-        end
-    end
-
-    if hasproperty(readtable, :sample) && k > 1
-        samples = unique(readtable.sample)
-        if length(samples) == 2
-            is_s1 = readtable.sample .== samples[1]
-            for c in 1:k
-                ft_samp = fisher(readtable.cluster .== c, is_s1)
-                sample_or[c] = ft_samp.or
-                sample_logor_se[c] = ft_samp.logor_se
-                sample_pvalue[c] = ft_samp.fisher_bpv
-                sample_min_pvalue[c] = ft_samp.fisher_bpv
-            end
-        elseif length(samples) > 2
-            for c in 1:k
-                best_pv = 1.0
-                best_or = NaN
-                best_se = NaN
-                for s in samples
-                    ft_samp = fisher(readtable.cluster .== c, readtable.sample .== s)
-                    if !isnan(ft_samp.fisher_bpv) && ft_samp.fisher_bpv <= best_pv
-                        best_pv = ft_samp.fisher_bpv
-                        best_or = ft_samp.or
-                        best_se = ft_samp.logor_se
-                    end
+        if hasproperty(readtable, :hap)
+            phased_mask = (readtable.hap .== 1) .| (readtable.hap .== 2)
+            if count(phased_mask) >= 10
+                sub_clust = readtable.cluster[phased_mask]
+                sub_hap1 = readtable.hap[phased_mask] .== 1
+                for c in 1:k
+                    ft_h = fisher(sub_clust .== c, sub_hap1)
+                    hap_or[c] = ft_h.or
+                    hap_logor_se[c] = ft_h.logor_se
+                    hap_pvalue[c] = ft_h.fisher_bpv
                 end
-                sample_or[c] = best_or
-                sample_logor_se[c] = best_se
-                sample_pvalue[c] = best_pv
-                sample_min_pvalue[c] = best_pv
             end
-        else
-            sample_or .= 1.0
-            sample_logor_se .= NaN
-            sample_pvalue .= 1.0
-            sample_min_pvalue .= 1.0
         end
-    else
-        sample_or .= 1.0
-        sample_logor_se .= NaN
-        sample_pvalue .= 1.0
-        sample_min_pvalue .= 1.0
+
+        if hasproperty(readtable, :sample)
+            samples = unique(readtable.sample)
+            if length(samples) == 2
+                is_s1 = readtable.sample .== samples[1]
+                for c in 1:k
+                    ft_samp = fisher(readtable.cluster .== c, is_s1)
+                    sample_or[c] = ft_samp.or
+                    sample_logor_se[c] = ft_samp.logor_se
+                    sample_pvalue[c] = ft_samp.fisher_bpv
+                    sample_min_pvalue[c] = ft_samp.fisher_bpv
+                end
+            elseif length(samples) > 2
+                for c in 1:k
+                    best_pv = 1.0
+                    best_or = NaN
+                    best_se = NaN
+                    for s in samples
+                        ft_samp = fisher(readtable.cluster .== c, readtable.sample .== s)
+                        if !isnan(ft_samp.fisher_bpv) && ft_samp.fisher_bpv <= best_pv
+                            best_pv = ft_samp.fisher_bpv
+                            best_or = ft_samp.or
+                            best_se = ft_samp.logor_se
+                        end
+                    end
+                    sample_or[c] = best_or
+                    sample_logor_se[c] = best_se
+                    sample_pvalue[c] = best_pv
+                    sample_min_pvalue[c] = best_pv
+                end
+            end
+        end
     end
     
     cluster_metrics.strand_or = strand_or
@@ -1094,49 +1091,42 @@ function clustertable(readtable, chrom, loc, reads, clusterresult, featmat; nrl_
     cluster_metrics.sample_pvalue = sample_pvalue
     cluster_metrics.sample_min_pvalue = sample_min_pvalue
 
-    #### FIRE NRL stats
-    FM = featureblock(featmat, nrl_feature, M=clusterresult.optimal_model.centers)
-    A = autocor(FM, 1:(size(FM, 1)-1))
-    detrended = Vector{Float64}(undef, size(FM, 1) - 1)
-    lags = featmat.ldx[1:end-1] .- first(featmat.ldx)
+    #### FIRE & 6mA NRL stats on cluster centers
+    nrls_fire = _spectral_nrl_columns(featmat, nrl_feature, k; M=clusterresult.optimal_model.centers)
+    cluster_metrics.nrl = nrls_fire.nrl
+    cluster_metrics.phasing_score = nrls_fire.phasing_score
+    cluster_metrics.is_closed = nrls_fire.is_closed
+    cluster_metrics.peak_type = nrls_fire.peak_type
     
-    nrls = [characterise_nucleosomes_spectral!(a, lags, detrended=detrended) for a in eachcol(A)]
-    
-    cluster_metrics.nrl = [n.nrl for n in nrls]
-    cluster_metrics.phasing_score = [n.phasing_score for n in nrls]
-    cluster_metrics.is_closed = [n.is_closed for n in nrls]
-    cluster_metrics.peak_type = [n.peak_type for n in nrls]
-    
-    cluster_metrics.nrl_fire = cluster_metrics.nrl
-    cluster_metrics.phasing_score_fire = cluster_metrics.phasing_score
-    cluster_metrics.is_closed_fire = cluster_metrics.is_closed
-    cluster_metrics.peak_type_fire = cluster_metrics.peak_type
+    cluster_metrics.nrl_fire = nrls_fire.nrl
+    cluster_metrics.phasing_score_fire = nrls_fire.phasing_score
+    cluster_metrics.is_closed_fire = nrls_fire.is_closed
+    cluster_metrics.peak_type_fire = nrls_fire.peak_type
 
-    #### 6mA NRL stats
-    if :mod_6mA in featmat.features
-        FM_6mA = featureblock(featmat, :mod_6mA, M=clusterresult.optimal_model.centers)
-        A_6mA = autocor(FM_6mA, 1:(size(FM_6mA, 1)-1))
-        detrended_6mA = Vector{Float64}(undef, size(FM_6mA, 1) - 1)
-        nrls_6mA = [characterise_nucleosomes_spectral!(a, lags, detrended=detrended_6mA) for a in eachcol(A_6mA)]
-        
-        cluster_metrics.nrl_6mA = [n.nrl for n in nrls_6mA]
-        cluster_metrics.phasing_score_6mA = [n.phasing_score for n in nrls_6mA]
-        cluster_metrics.is_closed_6mA = [n.is_closed for n in nrls_6mA]
-        cluster_metrics.peak_type_6mA = [n.peak_type for n in nrls_6mA]
-    else
-        cluster_metrics.nrl_6mA = fill(missing, k)
-        cluster_metrics.phasing_score_6mA = fill(NaN, k)
-        cluster_metrics.is_closed_6mA = fill(false, k)
-        cluster_metrics.peak_type_6mA = fill(:none, k)
-    end
+    nrls_6mA = _spectral_nrl_columns(featmat, :mod_6mA, k; M=clusterresult.optimal_model.centers)
+    cluster_metrics.nrl_6mA = nrls_6mA.nrl
+    cluster_metrics.phasing_score_6mA = nrls_6mA.phasing_score
+    cluster_metrics.is_closed_6mA = nrls_6mA.is_closed
+    cluster_metrics.peak_type_6mA = nrls_6mA.peak_type
     
-    # Safely merge cluster metrics back to the read-populated clusters in gdf
-    gdf_t = leftjoin(gdf, cluster_metrics, on=:cluster)
+    # Safely merge cluster metrics back to the read-populated clusters in gdf and keep sorted by cluster 1:k
+    gdf_t = sort!(leftjoin(gdf, cluster_metrics, on=:cluster), :cluster)
 
     first_fields = ["cluster", "chrom", "start", "stop"]
     fields = [first_fields ; setdiff(names(gdf_t), first_fields)]
     
     gdf_t[!, fields]
+end
+
+function _empty_modclustertable!(mcounts::DataFrame)
+    !hasproperty(mcounts, :total)       && (mcounts.total = Int[])
+    !hasproperty(mcounts, :rate)        && (mcounts.rate = Float64[])
+    mcounts.total_mod   = Int[]
+    mcounts.total_unmod = Int[]
+    mcounts.total_rate  = Float64[]
+    mcounts.log2FC      = Float64[]
+    mcounts.pvalue      = Float64[]
+    return mcounts
 end
 
 """
@@ -1145,32 +1135,22 @@ end
 Generates a DataFrame summarizing 5mC modification calls and rates per position 
 across the given clusters, filtered by the minimum number of modification calls.
 """
-function modclustertable_5mC(chrom, loc, reads, clusterresult; unifystrand=true, min_mods=5)
+function modclustertable_5mC(chrom, loc, reads, clusterresult; unifystrand=true, min_mods=5, pseudocount=0.05)
     readid = Int[]
     cluster = Int[]
     pos = Int[]
     mod = Bool[]
 
-    
-    
     for (k, (r, a)) in enumerate(zip(reads, clusterresult.optimal_model.assignments))
-        
-        for p in r.mods_5mC
-            if p in loc
+        for (positions, is_mod) in ((r.mods_5mC, true), (r.unmods_5mC, false))
+            for p in positions
                 v = (r.strand || !unifystrand) ? p : p - 1
-                push!(readid, k)
-                push!(cluster, a)
-                push!(pos, v)
-                push!(mod, true)
-            end
-        end
-        for p in r.unmods_5mC
-            if p in loc
-                v = (r.strand || !unifystrand) ? p : p - 1
-                push!(readid, k)
-                push!(cluster, a)
-                push!(pos, v)
-                push!(mod, false)
+                if v in loc
+                    push!(readid, k)
+                    push!(cluster, a)
+                    push!(pos, v)
+                    push!(mod, is_mod)
+                end
             end
         end
     end
@@ -1185,42 +1165,21 @@ function modclustertable_5mC(chrom, loc, reads, clusterresult; unifystrand=true,
         :mod => (x -> count(!, x)) => :unmod
     )
     
-    if nrow(mcounts) == 0
-        mcounts.total = Int[]
-        mcounts.rate = Float64[]
-        mcounts.total_mod = Int[]
-        mcounts.total_unmod = Int[]
-        mcounts.total_rate = Float64[]
-        mcounts.pvalue = Float64[]
-        return mcounts
-    end
+    nrow(mcounts) == 0 && return _empty_modclustertable!(mcounts)
 
     mcounts.total = mcounts.mod .+ mcounts.unmod
     mcounts.rate = mcounts.mod ./ mcounts.total
     mcounts = mcounts[mcounts.total .> min_mods, :]
-    
-    if nrow(mcounts) == 0
-        mcounts.total_mod = Int[]
-        mcounts.total_unmod = Int[]
-        mcounts.total_rate = Float64[]
-        mcounts.pvalue = Float64[]
-        return mcounts
-    end
+    nrow(mcounts) == 0 && return _empty_modclustertable!(mcounts)
 
     maxmods = combine(groupby(mcounts, :pos), :mod => maximum => :max)
-    pos_above_5 = maxmods[maxmods.max .> min_mods, :pos]
-    mcounts = mcounts[mcounts.pos .∈ Ref(Set(pos_above_5)), :]
-    
-    if nrow(mcounts) == 0
-        mcounts.total_mod = Int[]
-        mcounts.total_unmod = Int[]
-        mcounts.total_rate = Float64[]
-        mcounts.pvalue = Float64[]
-        return mcounts
-    end
+    pos_above_5 = Set(maxmods[maxmods.max .> min_mods, :pos])
+    mcounts = mcounts[mcounts.pos .∈ Ref(pos_above_5), :]
+    nrow(mcounts) == 0 && return _empty_modclustertable!(mcounts)
 
     transform!(groupby(mcounts, :pos), :mod => sum => :total_mod, :unmod => sum => :total_unmod)
     mcounts.total_rate = mcounts.total_mod ./ (mcounts.total_mod .+ mcounts.total_unmod)
+    mcounts.log2FC = log2.(mcounts.rate .+ pseudocount) .- log2.(mcounts.total_rate .+ pseudocount)
     bts = BinomialTest.(mcounts.mod, mcounts.total, mcounts.total_rate)
     mcounts.pvalue = pvalue.(bts)
     return mcounts
@@ -1266,7 +1225,7 @@ function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6m
                 epochs=epochs, rejection_neighbourhood_fraction=rejection_neighbourhood_fraction, max_rejections=max_rejections, maxiter=maxiter, 
                 linkage=linkage, rng=rng, logiter=logiter)
 
-        saveclustering(outdir, clustering, label)
+        !isnothing(clustering) && saveclustering(outdir, clustering, label)
     end
 
     smglog("Clustering complete in :", time() - starttime, " seconds")
@@ -1309,6 +1268,7 @@ Serializes the clustering results and writes the summary tables (readtable,
 clustertable, modclustertable) to compressed TSV files.
 """
 function saveclustering(outdir, clustering, label)
+    isnothing(clustering) && return nothing
 
     regionlabel = string("smgstats_cluster_", 
         isempty(label) ? join(sort(unique(clustering.readtable.sample)), ".") : label, "_",
@@ -1356,18 +1316,21 @@ function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA)
 
     loc = (first(peakloc) - dw):(last(peakloc) + dw)
 
-
     reads = collectstencilreads(bams, chrom, loc, strictfirefeatures=strictfirefeatures)
+    if isempty(reads)
+        smglog("Warning: No spanning reads found for ", chrom, ":", first(peakloc), "-", last(peakloc), " (window ", first(loc), "-", last(loc), "); skipping.")
+        return nothing
+    end
     CM = featurematrix(loc, reads, dx=dx, features=features, unify_gc_strand=unify_gc_strand, smooth_sigma=smooth_sigma)
     
     optimal_clustering  = select_k_kmeans_bic(CM.M, ks, max_k_fraction=max_k_fraction, n_ils_restarts=n_ils_restarts, n_restarts=n_restarts, epochs=epochs, linkage=linkage, logiter=logiter, 
                                 rejection_neighbourhood_fraction=rejection_neighbourhood_fraction, max_rejections=max_rejections, maxiter=maxiter, random_seed_offset=random_seed_offset, rng=rng);
     ### result tables
 
-    rt  = readtable(chrom, loc, reads, optimal_clustering, CM)
+    rt  = readtable(chrom, loc, reads, optimal_clustering, CM; unifystrand=unify_gc_strand)
     
     ct  = clustertable(rt, chrom, loc, reads, optimal_clustering, CM)
-    mct = modclustertable_5mC(chrom, loc, reads, optimal_clustering) 
+    mct = modclustertable_5mC(chrom, loc, reads, optimal_clustering; unifystrand=unify_gc_strand) 
 
 
     ( ; chrom, peakloc, loc, reads, CM, optimal_clustering, readtable=rt, clustertable=ct, modclustertable=mct)                        
