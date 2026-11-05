@@ -170,11 +170,20 @@ function render_cluster_report(clustering, outdir;
     label="", 
     filename="report.html", 
     catalog_path=nothing,
+    guide_path=nothing,
     update_nrl::Bool=true
 )
     update_nrl && update_clustering_nrl!(clustering; phase_threshold=phase_threshold)
     resolved_peakname, resolved_category = _resolve_peak_meta(clustering; peakname=peakname, category=category)
     mkpath(outdir)
+    resolved_guide_path = if !isnothing(guide_path)
+        String(guide_path)
+    elseif !isnothing(catalog_path)
+        "../../guide.html"
+    else
+        render_cluster_guide_html(joinpath(outdir, "guide.html"); back_url=filename, back_label="Back to Locus Report")
+        "guide.html"
+    end
     asset_dir = joinpath(outdir, "assets")
     assets = save_cluster_report_assets(clustering, asset_dir; 
         exondata=exondata, 
@@ -626,7 +635,14 @@ function render_cluster_report(clustering, outdir;
         
         <!-- Header Banner -->
         <header class="hero-banner">
-          $(!isnothing(catalog_path) ? """<div style="margin-bottom: 0.85rem;"><a href="$(catalog_path)" style="display: inline-flex; align-items: center; gap: 0.4rem; color: #0284c7; text-decoration: none; font-size: 0.85rem; font-weight: 600; padding: 0.3rem 0.75rem; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 6px; transition: all 0.15s ease;">&larr; Back to Catalog Dashboard</a></div>""" : "")
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.85rem;">
+            <div>
+              $(!isnothing(catalog_path) ? """<a href="$(catalog_path)" style="display: inline-flex; align-items: center; gap: 0.4rem; color: #0284c7; text-decoration: none; font-size: 0.85rem; font-weight: 600; padding: 0.3rem 0.75rem; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 6px; transition: all 0.15s ease;">&larr; Back to Catalog Dashboard</a>""" : "")
+            </div>
+            <div>
+              <a href="$(resolved_guide_path)" style="display: inline-flex; align-items: center; gap: 0.4rem; color: #4f46e5; text-decoration: none; font-size: 0.85rem; font-weight: 600; padding: 0.3rem 0.75rem; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 6px; transition: all 0.15s ease;">📖 Methodology &amp; Guide</a>
+            </div>
+          </div>
           <h1>Single-Molecule Cluster Report: <code>$resolved_peakname</code></h1>
           <p>Locus: <strong>$chrom:$loc_start-$loc_stop</strong> &bull; Target Peak: <code>$chrom:$peak_start-$peak_stop</code> (flank ±$(flank_bp) bp) &bull; PeakName: <strong>$resolved_peakname</strong> &bull; Category: <strong>$resolved_category</strong></p>
           <div class="badge-bar">
