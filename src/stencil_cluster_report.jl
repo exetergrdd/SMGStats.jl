@@ -21,20 +21,12 @@ and nucleosome footprints (lightgrey) as horizontal track polygons across `loc`.
 function fireplot(chrom, loc, readdata, leveldata; hap=nothing, strand=nothing, 
                   f=Figure(), axv=1, axh=1, 
                   ax=Axis(f[axv, axh], xgridvisible=false, ygridvisible=false, xticks=([], [])), 
-                  ymax=maximum(leveldata), showlegend=true, expand_fire=0.0, rasterize=false)
+                  ymax=isempty(leveldata) ? 1 : maximum(leveldata), showlegend=true, expand_fire=0.0, rasterize=false)
 
-    if !isnothing(hap) && !isnothing(strand)
-        ind = [(r.haplotype == hap) && (r.strand == strand) for r in readdata]
+    if !isnothing(hap) || !isnothing(strand)
+        ind = [(isnothing(hap) || r.haplotype == hap) && (isnothing(strand) || r.strand == strand) for r in readdata]
         reads = @view readdata[ind]
         levels = @view leveldata[ind]
-    elseif !isnothing(hap)
-        hapind = [r.haplotype == hap for r in readdata]
-        reads = @view readdata[hapind]
-        levels = @view leveldata[hapind]
-    elseif !isnothing(strand)
-        strandind = [r.strand == strand for r in readdata]
-        reads = @view readdata[strandind]
-        levels = @view leveldata[strandind]
     else
         reads = readdata
         levels = leveldata
@@ -86,7 +78,7 @@ function modplot(chrom, loc, readdata, leveldata; mod=:mod_6mA, unmod=false, plo
                  validpos=(Set{Int}(), Set{Int}()), strand=nothing, 
                  f=Figure(), axv=1, axh=1, 
                  ax=Axis(f[axv, axh], xgridvisible=false, ygridvisible=false, xticks=([], [])), 
-                 ymax=maximum(leveldata), markersize=4, markeralpha=1.0, depthfilter=5, unify_gc_strand=true,
+                 ymax=isempty(leveldata) ? 1 : maximum(leveldata), markersize=4, markeralpha=1.0, depthfilter=5, unify_gc_strand=true,
                  labelfun=x -> replace(basename(x), r".bam|.cram|.haplotagged" => ""))
 
     ind = trues(length(readdata))
@@ -131,7 +123,7 @@ function modplot(chrom, loc, readdata, leveldata; mod=:mod_6mA, unmod=false, plo
     end
 
     if unmod && unmodinfire
-        data, datalevels = filtermodfire(reads, levels, modfield)
+        data, datalevels = filtermodfire(reads, levels, modfield; unify_gc_strand=unify_gc_strand)
     else 
         data = mapreduce(r -> getmods(r, modfield, unify_gc_strand=unify_gc_strand), vcat, reads)
         datalevels = mapreduce((r, l) -> fill(l, length(getproperty(r, modfield))), vcat, reads, levels)
@@ -172,11 +164,7 @@ function modplot(chrom, loc, readdata, leveldata; mod=:mod_6mA, unmod=false, plo
     end
 
     if !isempty(data)
-        if unmod
-            scatter!(ax, data, datalevels, marker=:rect, color=:orange, markersize=markersize, alpha=markeralpha)
-        else
-            scatter!(ax, data, datalevels, marker=:rect, color=c, markersize=markersize, alpha=markeralpha)
-        end
+        scatter!(ax, data, datalevels, marker=:rect, color=unmod ? :orange : c, markersize=markersize, alpha=markeralpha)
     end
     
     if plotline
@@ -192,14 +180,15 @@ function modplot(chrom, loc, readdata, leveldata; mod=:mod_6mA, unmod=false, plo
     f
 end
 
-function filtermodfire(reads, levels, modfield)
+function filtermodfire(reads, levels, modfield; unify_gc_strand=false)
     data = Int[]
     datalevels = Int[]
     
     for (r, l) in zip(reads, levels)    
+        positions = getmods(r, modfield; unify_gc_strand=unify_gc_strand)
         for (s, e, q) in r.msps
-            (q > 0.8*255) || continue
-            for p in getproperty(r, modfield)
+            (q > 0.9*255) || continue
+            for p in positions
                 if s <= p <= e
                     push!(data, p)
                     push!(datalevels, l)
@@ -208,7 +197,6 @@ function filtermodfire(reads, levels, modfield)
         end        
     end
     data, datalevels
-    
 end
 
 function pilefire!(loc, read, fgpile, bgpile)
@@ -440,21 +428,24 @@ function boxplot_nrl(clustering; f=Figure(), axx=1, axy=1, direction=:vertical)
 end
 
 
-function plot_5mC_volcano(clustering; f=Figure(), axx=1, axy=1, weight=0.05, pv_thresh=0.025)
-    if nrow(clustering.modclustertable) == 0
+@inline read_plot_levels(clustering) = invperm(sortperm(clustering.optimal_clustering.optimal_model.assignments))
+
+function plot_5mC_volcano(clustering; f=Figure(), axx=1, axy=1, weight=0.05, pv_thresh=0.05)
+    mct = clustering.modclustertable
+    if nrow(mct) == 0
         ax = Axis(f[axy, axx], title="No 5mC sites")
         hidespines!(ax, :l, :t, :r, :b)
         return f
     end
 
-    if !hasproperty(clustering.modclustertable, :log2FC)
-        clustering.modclustertable.log2FC = log2.(clustering.modclustertable.rate .+ weight) .- log2.(clustering.modclustertable.total_rate .+ weight)
+    if !hasproperty(mct, :log2FC)
+       mct.log2FC = log2.(mct.rate .+ weight) .- log2.(mct.total_rate .+ weight)
     end
     
     # Non-significant points in gray, significant points colored by cluster
-    sig_mask = clustering.modclustertable.pvalue .< pv_thresh
-    df_sig = view(clustering.modclustertable, sig_mask, :)
-    df_nonsig = view(clustering.modclustertable, .!sig_mask, :)
+    sig_mask = mct.pvalue .< pv_thresh
+    df_sig = view(mct, sig_mask, :)
+    df_nonsig = view(mct, .!sig_mask, :)
     
     plt_nonsig = data(df_nonsig) * mapping(:log2FC, :pvalue => (x -> -log10(x))) * visual(Scatter, color=(:gray75, 0.6), markersize=6)
     plt_sig = data(df_sig) * mapping(:log2FC, :pvalue => (x -> -log10(x)), color=:cluster => string) * visual(Scatter, markersize=8)
@@ -471,7 +462,7 @@ function plot_5mC_volcano(clustering; f=Figure(), axx=1, axy=1, weight=0.05, pv_
         ax_obj = f.content[ax_idx]
         hlines!(ax_obj, -log10(pv_thresh), color=:black, linestyle=:dash)
         vlines!(ax_obj, 0, color=:black, linestyle=:dash)
-        valid_fcs = filter(!isnan, clustering.modclustertable.log2FC)
+        valid_fcs = filter(isfinite, mct.log2FC)
         fcmax = isempty(valid_fcs) ? 2.0 : maximum(abs, valid_fcs) * 1.15
         xlims!(ax_obj, -fcmax, fcmax)
         ylims!(ax_obj, 0, nothing)
@@ -479,7 +470,7 @@ function plot_5mC_volcano(clustering; f=Figure(), axx=1, axy=1, weight=0.05, pv_
     return f
 end
 
-function plot_5mC_diff_heat(clustering; f=Figure(), axx=1, axy=1, pv_thresh=0.025)
+function plot_5mC_diff_heat(clustering; f=Figure(), axx=1, axy=1, pv_thresh=0.05)
     df = filter(r -> r.pvalue < pv_thresh, clustering.modclustertable)
     if nrow(df) == 0
         ax = Axis(f[axy, axx], title="No significant 5mC sites (p < $pv_thresh)")
@@ -500,96 +491,86 @@ function plot_5mC_diff_heat(clustering; f=Figure(), axx=1, axy=1, pv_thresh=0.02
     return f
 end
 
-function strand_diagnostics(clustering)
-    opt_k = clustering.optimal_clustering.optimal_k
-    f = Figure(size=(1200, 500))
-    levels = sortperm(sortperm(clustering.optimal_clustering.optimal_model.assignments))
-    
-    if opt_k <= 1
-        ax_msg = Axis(f[1, 1], xgridvisible=false, ygridvisible=false)
-        hidespines!(ax_msg, :t, :r, :b, :l)
-        hidexdecorations!(ax_msg)
-        hideydecorations!(ax_msg)
-        text!(ax_msg, 0.5, 0.5, text="Homogeneous population (k = 1):\nAcross-cluster strand skew test not applicable.", align=(:center, :center), fontsize=13, color=:grey40)
-        
-        ax_mod = Axis(f[1, 2], xgridvisible=false, ygridvisible=false, title="6mA (+ vs - Strand)")
-        modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, strand=false, color=:crimson)
-        modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, strand=true, color=:steelblue)
-        clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
-        return f
-    end
+function _empty_diagnostic_axis!(f, msg::AbstractString)
+    ax_msg = Axis(f[1, 1], xgridvisible=false, ygridvisible=false)
+    hidespines!(ax_msg, :t, :r, :b, :l)
+    hidexdecorations!(ax_msg)
+    hideydecorations!(ax_msg)
+    text!(ax_msg, 0.5, 0.5, text=msg, align=(:center, :center), fontsize=13, color=:grey40)
+    return ax_msg
+end
 
-    cldf = [(cluster=k, fisher(clustering.readtable.cluster .== k, clustering.readtable.strand)...) for k = 1:opt_k] |> DataFrame
-
-    ax = Axis(f[1, 1], xgridvisible=false, ygridvisible=false, yticks=1:opt_k, xlabel="log(Odds Ratio) [+ / -]", ylabel="Cluster")
-    plt = data(cldf) * 
-          (mapping(:or => log, :cluster => nonnumeric, :logor_se => x -> 1.96 * x, color=:fisher_bpv => (x -> -log10(x))) * visual(Errorbars, direction=:x) + 
-           mapping(:or => log, :cluster => nonnumeric, color=:fisher_bpv => (x -> -log10(x)), marker=:fisher_bpv => (x -> x < 0.05) => "Fisher p < 0.05") * visual(Scatter))
-    d = draw!(ax, plt, scales(Color=(; colormap=:blues)))
-    colorbar!(f[1, 2], d, label="-log10(p)")
-    legend!(f[1, 3], d)
+function _style_forest_axis!(ax, cldf::DataFrame)
     vlines!(ax, 0, color=:black, linestyle=:dash)
     hidespines!(ax, :t, :r)
     ax.yreversed = true
-    
-    valid_ors = filter(!isinf, abs.(log.(cldf.or)) .+ cldf.logor_se .* 1.96)
-    valid_ors = filter(!isnan, valid_ors)
+    valid_ors = filter(isfinite, abs.(log.(cldf.or)) .+ cldf.logor_se .* 1.96)
     xmax = isempty(valid_ors) ? 2.0 : max(1.0, 1.15 * maximum(valid_ors))
     xlims!(ax, -xmax, xmax)
+    return ax
+end
+
+function strand_diagnostics(clustering)
+    opt_k = clustering.optimal_clustering.optimal_k
+    f = Figure(size=(1200, 500))
+    levels = read_plot_levels(clustering)
     
-    ax_mod = Axis(f[1, 4], xgridvisible=false, ygridvisible=false, title="6mA (+ vs - Strand)")
+    mod_col = if opt_k <= 1
+        _empty_diagnostic_axis!(f, "Homogeneous population (k = 1):\nAcross-cluster strand skew test not applicable.")
+        2
+    else
+        cldf = DataFrame([(cluster=k, fisher(clustering.readtable.cluster .== k, clustering.readtable.strand)...) for k in 1:opt_k])
+        ax = Axis(f[1, 1], xgridvisible=false, ygridvisible=false, yticks=1:opt_k, xlabel="log(Odds Ratio) [+ / -]", ylabel="Cluster")
+        plt = data(cldf) * 
+              (mapping(:or => log, :cluster => nonnumeric, :logor_se => x -> 1.96 * x, color=:fisher_bpv => (x -> -log10(x))) * visual(Errorbars, direction=:x) + 
+               mapping(:or => log, :cluster => nonnumeric, color=:fisher_bpv => (x -> -log10(x)), marker=:fisher_bpv => (x -> x < 0.05) => "Fisher p < 0.05") * visual(Scatter))
+        d = draw!(ax, plt, scales(Color=(; colormap=:blues)))
+        colorbar!(f[1, 2], d, label="-log10(p)")
+        legend!(f[1, 3], d)
+        _style_forest_axis!(ax, cldf)
+        4
+    end
+    
+    ax_mod = Axis(f[1, mod_col], xgridvisible=false, ygridvisible=false, title="6mA (+ vs - Strand)")
     modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, strand=false, color=:crimson)
     modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, strand=true, color=:steelblue)
     clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
-    
-    f
+    return f
 end
 
 function hap_diagnostics(clustering)
     opt_k = clustering.optimal_clustering.optimal_k
     f = Figure(size=(1200, 500))
-    levels = sortperm(sortperm(clustering.optimal_clustering.optimal_model.assignments))
+    levels = read_plot_levels(clustering)
+    rt = clustering.readtable
+    phased_mask = hasproperty(rt, :hap) ? ((rt.hap .== 1) .| (rt.hap .== 2)) : falses(nrow(rt))
+    has_both_haps = count(phased_mask) >= 10 && any(rt.hap .== 1) && any(rt.hap .== 2)
 
-    if opt_k <= 1
-        ax_msg = Axis(f[1, 1], xgridvisible=false, ygridvisible=false)
-        hidespines!(ax_msg, :t, :r, :b, :l)
-        hidexdecorations!(ax_msg)
-        hideydecorations!(ax_msg)
-        text!(ax_msg, 0.5, 0.5, text="Homogeneous population (k = 1):\nAcross-cluster haplotype skew test not applicable.", align=(:center, :center), fontsize=13, color=:grey40)
-        
-        ax_mod = Axis(f[1, 2], xgridvisible=false, ygridvisible=false, title="6mA by Haplotype (0=Unphased, 1=Red, 2=Blue)")
-        modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, hap=1, color=:crimson)
-        modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, hap=2, color=:steelblue)
-        modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, hap=0, color=:black)
-        clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
-        return f
+    mod_col = if opt_k <= 1 || !has_both_haps
+        msg = opt_k <= 1 ? "Homogeneous population (k = 1):\nAcross-cluster haplotype skew test not applicable." :
+                           "Insufficient phased reads (<10 across Hap 1 & Hap 2):\nAllelic skew test not applicable."
+        _empty_diagnostic_axis!(f, msg)
+        2
+    else
+        sub_clust = rt.cluster[phased_mask]
+        sub_hap   = rt.hap[phased_mask]
+        cldf = DataFrame(vec([(cluster=k, hap=h, fisher(sub_clust .== k, sub_hap .== h)...) for k in 1:opt_k, h in (1, 2)]))
+        ax = Axis(f[1, 1], xgridvisible=false, ygridvisible=false, yticks=1:opt_k, xlabel="log(Odds Ratio) [Hap 1 vs Hap 2 (phased)]", ylabel="Cluster")
+        plt = data(cldf) * 
+              (mapping(:or => log, (:cluster, :hap) => (c, h) -> c + (h == 1 ? -0.12 : 0.12), :logor_se => x -> 1.96 * x, color=:hap => nonnumeric) * visual(Errorbars, direction=:x) + 
+               mapping(:or => log, (:cluster, :hap) => (c, h) -> c + (h == 1 ? -0.12 : 0.12), color=:hap => nonnumeric, marker=:fisher_bpv => (x -> x < 0.05) => "Fisher p < 0.05") * visual(Scatter))
+        d = draw!(ax, plt, scales(Color=(; palette=[:crimson, :steelblue])))
+        legend!(f[1, 2], d)
+        _style_forest_axis!(ax, cldf)
+        3
     end
-
-    cldf = [(cluster=k, hap=h, fisher(clustering.readtable.cluster .== k, clustering.readtable.hap .== h)...) for k = 1:opt_k, h = [0, 1, 2]] |> vec |> DataFrame
     
-    ax = Axis(f[1, 1], xgridvisible=false, ygridvisible=false, yticks=1:opt_k, xlabel="log(Odds Ratio) [Hap vs Other]", ylabel="Cluster")
-    
-    plt = data(cldf) * 
-          (mapping(:or => log, (:cluster, :hap) => (c, h) -> c + (h - 1) * 0.22, :logor_se => x -> 1.96 * x, color=:hap => nonnumeric) * visual(Errorbars, direction=:x) + 
-           mapping(:or => log, (:cluster, :hap) => (c, h) -> c + (h - 1) * 0.22, color=:hap => nonnumeric, marker=:fisher_bpv => (x -> x < 0.05) => "Fisher p < 0.05") * visual(Scatter))
-    d = draw!(ax, plt, scales(Color=(; palette=[:black, :crimson, :steelblue])))
-    legend!(f[1, 2], d)
-    vlines!(ax, 0, color=:black, linestyle=:dash)
-    hidespines!(ax, :t, :r)
-    ax.yreversed = true
-    
-    valid_ors = filter(!isinf, abs.(log.(cldf.or)) .+ cldf.logor_se .* 1.96)
-    valid_ors = filter(!isnan, valid_ors)
-    xmax = isempty(valid_ors) ? 2.0 : max(1.0, 1.15 * maximum(valid_ors))
-    xlims!(ax, -xmax, xmax)
-    
-    ax_mod = Axis(f[1, 3], xgridvisible=false, ygridvisible=false, title="6mA by Haplotype (0=Unphased/black, 1=Red, 2=Blue)")
+    ax_mod = Axis(f[1, mod_col], xgridvisible=false, ygridvisible=false, title="6mA by Haplotype (0=Unphased/black, 1=Red, 2=Blue)")
     modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, hap=1, color=:crimson)
     modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, hap=2, color=:steelblue)
     modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, hap=0, color=:black)
     clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
-    
-    f
+    return f
 end
 
 """
@@ -604,19 +585,14 @@ function sample_diagnostics(clustering)
     opt_k = clustering.optimal_clustering.optimal_k
     samples = hasproperty(clustering.readtable, :sample) ? unique(clustering.readtable.sample) : String[]
     n_samples = length(samples)
-    levels = sortperm(sortperm(clustering.optimal_clustering.optimal_model.assignments))
+    levels = read_plot_levels(clustering)
     
     f = Figure(size=(1200, 500))
     
     if opt_k <= 1 || n_samples < 2
-        ax_msg = Axis(f[1, 1], xgridvisible=false, ygridvisible=false)
-        hidespines!(ax_msg, :t, :r, :b, :l)
-        hidexdecorations!(ax_msg)
-        hideydecorations!(ax_msg)
         msg = opt_k <= 1 ? "Homogeneous population (k = 1):\nAcross-cluster sample skew test not applicable." :
-                           "Single sample dataset ($(first(samples))):\nAcross-sample skew test not applicable."
-        text!(ax_msg, 0.5, 0.5, text=msg, align=(:center, :center), fontsize=13, color=:grey40)
-        
+                           "Single sample dataset ($(isempty(samples) ? "none" : first(samples))):\nAcross-sample skew test not applicable."
+        _empty_diagnostic_axis!(f, msg)
         ax_mod = Axis(f[1, 2], xgridvisible=false, ygridvisible=false, title="6mA Reads by Sample")
         modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, strand=nothing, color=:steelblue)
         clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
@@ -624,15 +600,11 @@ function sample_diagnostics(clustering)
     end
 
     # Multi-cluster, multi-sample: Compute Fisher exact tests
-    
-    cldf = [(cluster=k, sample=s, fisher(clustering.readtable.cluster .== k, clustering.readtable.sample .== s)...) for k in 1:opt_k, s in samples] |> vec |> DataFrame
-    
-    
+    cldf = DataFrame(vec([(cluster=k, sample=s, fisher(clustering.readtable.cluster .== k, clustering.readtable.sample .== s)...) for k in 1:opt_k, s in samples]))
     ax = Axis(f[1, 1], xgridvisible=false, ygridvisible=false, yticks=1:opt_k, xlabel="log(Odds Ratio) [Sample vs Other]", ylabel="Cluster")
     
     palette = [:steelblue, :crimson, :darkorange, :forestgreen, :purple, :teal, :magenta]
     sample_palette = palette[1:min(length(palette), n_samples)]
-    
     sample_dict = Dict(s => i for (i, s) in enumerate(samples))
     
     plt = data(cldf) * 
@@ -640,14 +612,7 @@ function sample_diagnostics(clustering)
            mapping(:or => log, (:cluster, :sample) => ((c, s) -> c + (sample_dict[s] - (n_samples + 1)/2)*(0.4/n_samples)), color=:sample => nonnumeric, marker=:fisher_bpv => (x -> x < 0.05) => "Fisher p < 0.05") * visual(Scatter))
     d = draw!(ax, plt, scales(Color=(; palette=sample_palette)))
     legend!(f[1, 2], d)
-    vlines!(ax, 0, color=:black, linestyle=:dash)
-    hidespines!(ax, :t, :r)
-    ax.yreversed = true
-    
-    valid_ors = filter(!isinf, abs.(log.(cldf.or)) .+ cldf.logor_se .* 1.96)
-    valid_ors = filter(!isnan, valid_ors)
-    xmax = isempty(valid_ors) ? 2.0 : max(1.0, 1.15 * maximum(valid_ors))
-    xlims!(ax, -xmax, xmax)
+    _style_forest_axis!(ax, cldf)
     
     ax_mod = Axis(f[1, 3], xgridvisible=false, ygridvisible=false, title="6mA Single-Molecule Reads by Sample")
     for (i, s) in enumerate(samples)
@@ -726,7 +691,7 @@ Builds the synchronized multi-channel single-molecule fiber track plot:
 - 5mC Methylation scatter track.
 """
 function plot_cluster_tracks(clustering; f=Figure(size=(1600, 650)))
-    levels = sortperm(sortperm(clustering.optimal_clustering.optimal_model.assignments))
+    levels = read_plot_levels(clustering)
     axs = Axis[]
     
     # 1. Uncertainty beeswarm on left
@@ -776,13 +741,13 @@ Uses compact row gaps and a single header row for column titles.
 function plot_cluster_profiles(clustering; f=Figure(size=(1600, 750)))
     cldf = clustermeans(clustering)
     
-    plt_fire_6mA = data(filter(r -> r.Label in ["FIRE", "6mA"], cldf)) * 
+    plt_fire_6mA = data(filter(r -> r.Label in ("FIRE", "6mA"), cldf)) * 
                    mapping(:Loc, :ClusterMean, row=:Cluster => string, color=:Label => presorted) * 
                    visual(BarPlot, alpha=0.9)
-    plt_nuc_6mA  = data(filter(r -> r.Label in ["Nucleosome", "6mA"], cldf)) * 
+    plt_nuc_6mA  = data(filter(r -> r.Label in ("Nucleosome", "6mA"), cldf)) * 
                    mapping(:Loc, :ClusterMean, row=:Cluster => string, color=:Label => presorted) * 
                    visual(BarPlot, alpha=0.9)
-    plt_5mC_6mA  = data(filter(r -> r.Label in ["5mC", "FIRE"], cldf)) * 
+    plt_5mC_fire = data(filter(r -> r.Label in ("5mC", "FIRE"), cldf)) * 
                    mapping(:Loc, :ClusterMean, row=:Cluster => string, color=:Label => presorted) * 
                    visual(BarPlot, alpha=0.9)
 
@@ -792,7 +757,7 @@ function plot_cluster_profiles(clustering; f=Figure(size=(1600, 750)))
 
     lf = draw!(gl_fire, plt_fire_6mA; axis=(; xgridvisible=false, ygridvisible=false))
     cf = draw!(gl_nuc,  plt_nuc_6mA;  axis=(; xgridvisible=false, ygridvisible=false))
-    rf = draw!(gl_5mc,  plt_5mC_6mA;  axis=(; xgridvisible=false, ygridvisible=false))
+    rf = draw!(gl_5mc,  plt_5mC_fire; axis=(; xgridvisible=false, ygridvisible=false))
 
     rowgap!(gl_fire, 4)
     rowgap!(gl_nuc, 4)
@@ -829,6 +794,10 @@ function plot_spectral_nrl(clustering; f=nothing, nrl_feature=:fire, phase_thres
     FM_6mA  = has_6mA  ? featureblock(clustering.CM, :mod_6mA, M=clustering.optimal_clustering.optimal_model.centers) : nothing
     
     ref_FM = !isnothing(FM_fire) ? FM_fire : FM_6mA
+    if isnothing(ref_FM) || size(ref_FM, 1) < 3
+        _empty_diagnostic_axis!(fig, "No compatible feature block (fire or mod_6mA) for spectral NRL analysis.")
+        return fig
+    end
     n_lags = size(ref_FM, 1) - 1
     lags = clustering.CM.ldx[1:n_lags] .- first(clustering.CM.ldx)
     
@@ -857,7 +826,7 @@ function plot_spectral_nrl(clustering; f=nothing, nrl_feature=:fire, phase_thres
         ax = Axis(fig[row, col], xgridvisible=false, ygridvisible=false,
                   title=panel_title, xlabel="Lag (bp)", ylabel="Detrended AC")
         
-        if !isnothing(res_fire)
+        if !isnothing(res_fire) && any(isfinite, detrended_fire)
             lines!(ax, lags, detrended_fire, color=(:dodgerblue, 0.85), linewidth=1.5, label="FIRE AC")
             if res_fire.is_closed
                 wave_fire = (2.0 * res_fire.phasing_score) .* cos.(2.0 * π .* lags ./ res_fire.nrl)
@@ -866,7 +835,7 @@ function plot_spectral_nrl(clustering; f=nothing, nrl_feature=:fire, phase_thres
             end
         end
         
-        if !isnothing(res_6mA)
+        if !isnothing(res_6mA) && any(isfinite, detrended_6mA)
             lines!(ax, lags, detrended_6mA, color=(:darkorange, 0.85), linewidth=1.5, label="6mA AC")
             if res_6mA.is_closed
                 wave_6mA = (2.0 * res_6mA.phasing_score) .* cos.(2.0 * π .* lags ./ res_6mA.nrl)
@@ -876,7 +845,7 @@ function plot_spectral_nrl(clustering; f=nothing, nrl_feature=:fire, phase_thres
         end
         
         hidespines!(ax, :t, :r)
-        axislegend(ax, framevisible=false, position=:rt, labelsize=8)
+        !isempty(ax.scene.plots) && axislegend(ax, framevisible=false, position=:rt, labelsize=8)
     end
     return fig
 end
