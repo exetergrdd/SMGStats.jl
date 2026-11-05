@@ -86,6 +86,8 @@ Base.@kwdef struct LocusSummary
     peak_width::Int
     loc_start::Int
     loc_stop::Int
+    peak_name::String
+    category::String
     nearest_gene::String
     nearest_gene_id::String
     gene_type::String
@@ -134,23 +136,39 @@ function update_clustering_nrl!(clustering; phase_threshold::Float64=0.035, nrl_
             cids = ct.cluster
 
             nrls_fire = _spectral_nrl_columns(clustering.CM, nrl_feature, k; M=centers, phase_threshold=phase_threshold)
-            ct.nrl           = [nrls_fire.nrl[c] for c in cids]
-            ct.phasing_score = [nrls_fire.phasing_score[c] for c in cids]
-            ct.is_closed     = [nrls_fire.is_closed[c] for c in cids]
-            ct.peak_type     = [nrls_fire.peak_type[c] for c in cids]
-            if hasproperty(ct, :nrl_fire)
-                ct.nrl_fire           = ct.nrl
-                ct.phasing_score_fire = ct.phasing_score
-                ct.is_closed_fire     = ct.is_closed
-                ct.peak_type_fire     = ct.peak_type
-            end
+            ct.nrl                = [nrls_fire.nrl[c] for c in cids]
+            ct.phasing_score      = [nrls_fire.phasing_score[c] for c in cids]
+            ct.is_closed          = [nrls_fire.is_closed[c] for c in cids]
+            ct.peak_type          = [nrls_fire.peak_type[c] for c in cids]
+            ct.nrl_fire           = ct.nrl
+            ct.phasing_score_fire = ct.phasing_score
+            ct.is_closed_fire     = ct.is_closed
+            ct.peak_type_fire     = ct.peak_type
 
-            if :mod_6mA in clustering.CM.features && hasproperty(ct, :nrl_6mA)
+            if :mod_6mA in clustering.CM.features
                 nrls_6mA = _spectral_nrl_columns(clustering.CM, :mod_6mA, k; M=centers, phase_threshold=phase_threshold)
                 ct.nrl_6mA           = [nrls_6mA.nrl[c] for c in cids]
                 ct.phasing_score_6mA = [nrls_6mA.phasing_score[c] for c in cids]
                 ct.is_closed_6mA     = [nrls_6mA.is_closed[c] for c in cids]
                 ct.peak_type_6mA     = [nrls_6mA.peak_type[c] for c in cids]
+            end
+
+            # Backfill read-level 6mA NRLs on pre-existing JLD2 files if missing
+            if haskey(clustering, :readtable) && !isnothing(clustering.readtable)
+                rt = clustering.readtable
+                n_reads = nrow(rt)
+                if :mod_6mA in clustering.CM.features && !hasproperty(rt, :nrl_6mA)
+                    read_nrls_6mA = _spectral_nrl_columns(clustering.CM, :mod_6mA, n_reads; phase_threshold=phase_threshold)
+                    rt.nrl_6mA                    = read_nrls_6mA.nrl
+                    rt.phasing_score_6mA          = read_nrls_6mA.phasing_score
+                    rt.phasing_implies_closed_6mA = read_nrls_6mA.is_closed
+                    rt.phasing_peak_type_6mA      = read_nrls_6mA.peak_type
+                end
+                if hasproperty(rt, :nrl_6mA) && !hasproperty(ct, :mean_read_nrl_6mA)
+                    ct.total_valid_nrls_6mA        = [count(!ismissing, view(rt.nrl_6mA, rt.cluster .== c)) for c in cids]
+                    ct.mean_read_nrl_6mA           = [filtmean(view(rt.nrl_6mA, rt.cluster .== c)) for c in cids]
+                    ct.mean_read_phasing_score_6mA = [filtmean(view(rt.phasing_score_6mA, rt.cluster .== c)) for c in cids]
+                end
             end
         catch err
             # Silently fallback if CM or model cannot be re-evaluated
@@ -183,13 +201,74 @@ function load_clustering(fpath::AbstractString; phase_threshold::Float64=0.035)
     return obj
 end
 
+function _build_peak_lookup(peakfile)
+    isnothing(peakfile) && return nothing
+    bdf = peakfile isa DataFrame ? peakfile : loadbed(peakfile)
+    lookup = Dict{Tuple{String, Int, Int}, Tuple{String, String}}()
+    for (i, r) in enumerate(eachrow(bdf))
+        pname = hasproperty(r, :PeakName) ? String(string(r.PeakName)) : "peak_$i"
+        pcat  = hasproperty(r, :Category) ? String(string(r.Category)) : "ClusterPeak"
+        lookup[(String(r.chrom), Int(r.start), Int(r.stop))] = (pname, pcat)
+    end
+    return lookup
+end
+
+function _resolve_peak_meta(clustering; idx::Int=1, peak_lookup=nothing,
+                            peakname::Union{Nothing, AbstractString}=nothing,
+                            category::Union{Nothing, AbstractString}=nothing)
+    chrom = String(clustering.chrom)
+    pstart = Int(first(clustering.peakloc))
+    pstop  = Int(last(clustering.peakloc))
+
+    pname = if !isnothing(peakname)
+        String(peakname)
+    elseif !isnothing(peak_lookup) && haskey(peak_lookup, (chrom, pstart, pstop))
+        peak_lookup[(chrom, pstart, pstop)][1]
+    elseif hasproperty(clustering, :PeakName)
+        String(clustering.PeakName)
+    elseif hasproperty(clustering.clustertable, :PeakName) && nrow(clustering.clustertable) > 0
+        String(clustering.clustertable.PeakName[1])
+    else
+        "peak_$idx"
+    end
+
+    pcat = if !isnothing(category)
+        String(category)
+    elseif !isnothing(peak_lookup) && haskey(peak_lookup, (chrom, pstart, pstop))
+        peak_lookup[(chrom, pstart, pstop)][2]
+    elseif hasproperty(clustering, :Category)
+        String(clustering.Category)
+    elseif hasproperty(clustering.clustertable, :Category) && nrow(clustering.clustertable) > 0
+        String(clustering.clustertable.Category[1])
+    else
+        "ClusterPeak"
+    end
+
+    # Backfill in-memory tables if loaded from older JLD2 files
+    if hasproperty(clustering, :clustertable) && !isnothing(clustering.clustertable)
+        ct = clustering.clustertable
+        !hasproperty(ct, :PeakName) && (ct.PeakName = fill(pname, nrow(ct)))
+        !hasproperty(ct, :Category) && (ct.Category = fill(pcat, nrow(ct)))
+    end
+    if hasproperty(clustering, :readtable) && !isnothing(clustering.readtable)
+        rt = clustering.readtable
+        !hasproperty(rt, :PeakName) && (rt.PeakName = fill(pname, nrow(rt)))
+        !hasproperty(rt, :Category) && (rt.Category = fill(pcat, nrow(rt)))
+    end
+
+    return pname, pcat
+end
+
 """
-    extract_locus_summary(clustering; exondata=nothing, slug=nothing)
+    extract_locus_summary(clustering; exondata=nothing, slug=nothing, idx=1, peak_lookup=nothing, peakname=nothing, category=nothing)
 
 Extracts key diagnostic metrics, genomic context, and cluster summaries from a `clustering` object
 for catalog indexing and client-side filtering.
 """
-function extract_locus_summary(clustering; exondata=nothing, slug::Union{Nothing, AbstractString}=nothing)
+function extract_locus_summary(clustering; exondata=nothing, slug::Union{Nothing, AbstractString}=nothing,
+                               idx::Int=1, peak_lookup=nothing,
+                               peakname::Union{Nothing, AbstractString}=nothing,
+                               category::Union{Nothing, AbstractString}=nothing)
     chrom = String(clustering.chrom)
     peak_start = first(clustering.peakloc)
     peak_stop  = last(clustering.peakloc)
@@ -203,6 +282,7 @@ function extract_locus_summary(clustering; exondata=nothing, slug::Union{Nothing
     
     resolved_slug = isnothing(slug) ? "$(chrom)_$(peak_start)_$(peak_stop)" : String(slug)
     region_id = "$(chrom):$(peak_start)-$(peak_stop)"
+    peak_name, peak_cat = _resolve_peak_meta(clustering; idx=idx, peak_lookup=peak_lookup, peakname=peakname, category=category)
     
     # Genomic annotations on the target regulatory peak
     annot = if !isnothing(exondata)
@@ -279,6 +359,8 @@ function extract_locus_summary(clustering; exondata=nothing, slug::Union{Nothing
         peak_width = peak_width,
         loc_start = loc_start,
         loc_stop = loc_stop,
+        peak_name = peak_name,
+        category = peak_cat,
         nearest_gene = String(annot.nearest_gene),
         nearest_gene_id = String(annot.nearest_gene_id),
         gene_type = String(annot.gene_type),
@@ -307,6 +389,7 @@ generates individual interactive HTML reports, and builds a unified multi-region
 """
 function build_cluster_catalog(inputs, outdir; 
     exondata=nothing, 
+    peakfile=nothing,
     longest_only=true, 
     gene_flank=15_000,
     phase_threshold=0.035,
@@ -349,13 +432,14 @@ function build_cluster_catalog(inputs, outdir;
     
     smglog("Catalog: Found $n_total clustering files to index into $outdir")
     
-    # 2. Load exondata annotations if string path given
+    # 2. Load exondata annotations and optional peakfile lookup
     loaded_exondata = if exondata isa AbstractString
         smglog("Catalog: Loading ExonData annotations from $exondata...")
         load_exondata(exondata)
     else
         exondata
     end
+    peak_lookup = _build_peak_lookup(peakfile)
     
     # 3. Process each region
     catalog_entries = LocusSummary[]
@@ -371,7 +455,7 @@ function build_cluster_catalog(inputs, outdir;
             seen_slugs[base_slug] = slug_count
             unique_slug = slug_count == 1 ? base_slug : "$(base_slug)_$(slug_count)"
 
-            sum_entry = extract_locus_summary(clustering; exondata=loaded_exondata, slug=unique_slug)
+            sum_entry = extract_locus_summary(clustering; exondata=loaded_exondata, slug=unique_slug, idx=idx, peak_lookup=peak_lookup)
             push!(catalog_entries, sum_entry)
             
             if generate_reports
@@ -383,6 +467,8 @@ function build_cluster_catalog(inputs, outdir;
                         longest_only=longest_only, 
                         gene_flank=gene_flank,
                         phase_threshold=phase_threshold,
+                        peakname=sum_entry.peak_name,
+                        category=sum_entry.category,
                         catalog_path="../../index.html",
                         update_nrl=false
                     )
@@ -1023,7 +1109,7 @@ function generate_catalog_html(catalog_entries, title)
       <div class="search-row">
         <div class="search-input-wrapper">
           <span class="search-icon">🔍</span>
-          <input type="text" id="searchInput" class="search-input" placeholder="Search by Gene (e.g. MYC), Chromosome (e.g. chr10), or Coordinates (chr:start-stop)...">
+          <input type="text" id="searchInput" class="search-input" placeholder="Search by PeakName (e.g. ctcf_1), Category (e.g. AccessibleTSS), Gene, or Coordinates...">
         </div>
         <div>
           <select id="sortSelect" class="select-dropdown">
@@ -1033,6 +1119,8 @@ function generate_catalog_html(catalog_entries, title)
             <option value="tss_asc">Sort: Nearest TSS Distance</option>
             <option value="open_desc">Sort: % Open Molecules</option>
             <option value="coords">Sort: Genomic Position</option>
+            <option value="peak_name">Sort: Peak Name</option>
+            <option value="category">Sort: Peak Category</option>
           </select>
         </div>
       </div>
@@ -1047,6 +1135,14 @@ function generate_catalog_html(catalog_entries, title)
             <button class="pill-btn" data-context="Promoter">Promoter</button>
             <button class="pill-btn" data-context="Gene Body">Gene Body</button>
             <button class="pill-btn" data-context="Intergenic">Intergenic</button>
+          </div>
+        </div>
+
+        <!-- Category Pills (populated dynamically from dataset categories) -->
+        <div class="filter-section">
+          <span class="filter-title">Category:</span>
+          <div class="pill-group" id="categoryPills">
+            <button class="pill-btn active" data-category="all">All</button>
           </div>
         </div>
 
@@ -1096,6 +1192,8 @@ function generate_catalog_html(catalog_entries, title)
           <thead>
             <tr>
               <th data-col="coords">Genomic Locus</th>
+              <th data-col="peak_name">Peak Name</th>
+              <th data-col="category">Category</th>
               <th data-col="gene">Nearest Gene</th>
               <th data-col="context">Context</th>
               <th data-col="reads">Read Depth</th>
@@ -1145,6 +1243,7 @@ function generate_catalog_html(catalog_entries, title)
     let state = {
       searchQuery: '',
       contextFilter: 'all',
+      categoryFilter: 'all',
       kFilter: 'all',
       toggleOpen: false,
       toggleHap: false,
@@ -1155,6 +1254,17 @@ function generate_catalog_html(catalog_entries, title)
       pageSize: 50,
       currentPage: 1
     };
+
+    // Populate Category Pills dynamically
+    const categoryPills = document.getElementById('categoryPills');
+    const uniqueCategories = [...new Set(RAW_DATA.map(d => d.category).filter(Boolean))].sort();
+    for (const cat of uniqueCategories) {
+      const btn = document.createElement('button');
+      btn.className = 'pill-btn';
+      btn.dataset.category = cat;
+      btn.textContent = cat;
+      categoryPills.appendChild(btn);
+    }
 
     // --- DOM Elements ---
     const searchInput = document.getElementById('searchInput');
@@ -1178,8 +1288,13 @@ function generate_catalog_html(catalog_entries, title)
           const matchGeneId = row.nearest_gene_id && row.nearest_gene_id.toLowerCase().includes(q);
           const matchId = row.region_id && row.region_id.toLowerCase().includes(q);
           const matchChr = row.chrom && row.chrom.toLowerCase().includes(q);
-          if (!matchGene && !matchGeneId && !matchId && !matchChr) return false;
+          const matchPeak = row.peak_name && row.peak_name.toLowerCase().includes(q);
+          const matchCat = row.category && row.category.toLowerCase().includes(q);
+          if (!matchGene && !matchGeneId && !matchId && !matchChr && !matchPeak && !matchCat) return false;
         }
+
+        // Category
+        if (state.categoryFilter !== 'all' && row.category !== state.categoryFilter) return false;
 
         // Context
         if (state.contextFilter !== 'all') {
@@ -1213,6 +1328,8 @@ function generate_catalog_html(catalog_entries, title)
           case 'open_desc':  return b.prop_open - a.prop_open;
           case 'nrl_asc':    return (a.min_nrl ?? 9999) - (b.min_nrl ?? 9999);
           case 'coords':     return a.chrom.localeCompare(b.chrom, undefined, {numeric: true}) || a.peak_start - b.peak_start;
+          case 'peak_name':  return (a.peak_name || '').localeCompare(b.peak_name || '', undefined, {numeric: true});
+          case 'category':   return (a.category || '').localeCompare(b.category || '') || b.total_reads - a.total_reads;
           default: return 0;
         }
       });
@@ -1308,6 +1425,12 @@ function generate_catalog_html(catalog_entries, title)
               <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 2px;">\${row.peak_width} bp element</div>
             </td>
             <td>
+              <span style="font-family: var(--font-mono); font-size: 0.82rem; font-weight: 600; color: var(--text-main);">\${row.peak_name || '—'}</span>
+            </td>
+            <td>
+              <span class="context-badge \${row.category === 'AccessibleTSS' ? 'ctx-promoter' : (row.category === 'FirePeak' ? 'ctx-genebody' : 'ctx-intergenic')}">\${row.category || 'ClusterPeak'}</span>
+            </td>
+            <td>
               <div class="gene-title">\${row.nearest_gene || '—'}</div>
               <div>\${distBadge}</div>
             </td>
@@ -1397,6 +1520,16 @@ function generate_catalog_html(catalog_entries, title)
       render();
     });
 
+    // Category Pills
+    categoryPills.addEventListener('click', (e) => {
+      if (!e.target.classList.contains('pill-btn')) return;
+      document.querySelectorAll('#categoryPills .pill-btn').forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      state.categoryFilter = e.target.dataset.category;
+      state.currentPage = 1;
+      render();
+    });
+
     // K State Pills
     document.getElementById('kPills').addEventListener('click', (e) => {
       if (!e.target.classList.contains('pill-btn')) return;
@@ -1426,6 +1559,8 @@ function generate_catalog_html(catalog_entries, title)
     // Column Header Click Sorting
     const colSortMap = {
       coords: 'coords',
+      peak_name: 'peak_name',
+      category: 'category',
       gene: 'tss_asc',
       context: 'tss_asc',
       reads: 'reads_desc',
