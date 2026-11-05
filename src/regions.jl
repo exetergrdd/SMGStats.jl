@@ -126,6 +126,17 @@ function loadbed(bedfile)
             bdf[!, :name] = string.(replace(basename(bedfile), ".bed" => ""), "_", 1:size(bdf, 1))
         end
     end
+    n = nrow(bdf)
+    if :PeakName ∉ propertynames(bdf)
+        bdf[!, :PeakName] = (:name ∈ propertynames(bdf)) ? String.(string.(bdf.name)) : ["peak_$i" for i in 1:n]
+    else
+        bdf[!, :PeakName] = String.(string.(bdf.PeakName))
+    end
+    if :Category ∉ propertynames(bdf)
+        bdf[!, :Category] = fill("ClusterPeak", n)
+    else
+        bdf[!, :Category] = String.(string.(bdf.Category))
+    end
     bdf
 end
 
