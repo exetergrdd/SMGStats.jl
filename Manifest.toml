@@ -2,7 +2,7 @@
 
 julia_version = "1.12.3"
 manifest_format = "2.0"
-project_hash = "31bbf24ab32e2f54f1d479be99fba82df2828f34"
+project_hash = "97b32bae982ea6484a38dc7f39ad96bc41b5333a"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -1549,7 +1549,7 @@ uuid = "1fcad8e2-2524-48d4-84b4-e3c1a79e288e"
 version = "1.0.0-DEV"
 
 [[deps.SMGStats]]
-deps = ["AlgebraOfGraphics", "ArgParse", "CSV", "CairoMakie", "Clustering", "CodecZlib", "ColorSchemes", "DataFrames", "Dates", "Distances", "FreeTypeAbstraction", "GenomicFeatures", "HypothesisTests", "ImageFiltering", "JLD2", "OnlineStats", "ProgressMeter", "Random", "SMGReader", "Statistics", "StatsBase", "UnicodePlots", "YAML"]
+deps = ["AlgebraOfGraphics", "ArgParse", "CSV", "CairoMakie", "Clustering", "CodecZlib", "ColorSchemes", "DataFrames", "Dates", "Distances", "FreeTypeAbstraction", "GenomicFeatures", "HypothesisTests", "ImageFiltering", "JLD2", "OnlineStats", "ProgressMeter", "Random", "SMGReader", "Statistics", "StatsBase", "SwarmMakie", "UnicodePlots", "YAML"]
 path = "."
 uuid = "69244843-d0fa-4a00-9bc2-bde15b166b8b"
 version = "1.0.0-DEV"

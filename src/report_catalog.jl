@@ -470,6 +470,7 @@ function build_cluster_catalog(inputs, outdir;
                         peakname=sum_entry.peak_name,
                         category=sum_entry.category,
                         catalog_path="../../index.html",
+                        guide_path="../../guide.html",
                         update_nrl=false
                     )
                 end
@@ -487,7 +488,11 @@ function build_cluster_catalog(inputs, outdir;
     end
     smglog("Catalog: Saved JSON summary to $json_path")
     
-    # 5. Generate and save master index.html
+    # 5. Render Methodology & Guide HTML
+    guide_path = joinpath(outdir, "guide.html")
+    render_cluster_guide_html(guide_path; back_url="index.html", back_label="Back to Catalog Dashboard")
+
+    # 6. Generate and save master index.html
     html_content = generate_catalog_html(catalog_entries, title)
     index_path = joinpath(outdir, "index.html")
     write(index_path, html_content)
@@ -1065,8 +1070,11 @@ function generate_catalog_html(catalog_entries, title)
         <span>Chromatin Clustering</span>
         <span class="brand-badge">Catalog</span>
       </div>
-      <div style="font-size: 0.85rem; color: var(--text-muted);">
-        Single-Molecule Fiber-seq Diagnostics
+      <div style="display: flex; align-items: center; gap: 1rem;">
+        <a href="guide.html" style="display: inline-flex; align-items: center; gap: 0.4rem; color: #4f46e5; text-decoration: none; font-size: 0.84rem; font-weight: 600; padding: 0.35rem 0.8rem; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 6px; transition: all 0.15s ease;">📖 Methodology &amp; Guide</a>
+        <div style="font-size: 0.85rem; color: var(--text-muted);">
+          Single-Molecule Fiber-seq Diagnostics
+        </div>
       </div>
     </div>
   </nav>
@@ -1590,4 +1598,322 @@ function generate_catalog_html(catalog_entries, title)
 </body>
 </html>
     """
+end
+
+
+function _github_heading_slug(s::AbstractString)
+    plain = replace(s, r"<[^>]+>" => "")
+    plain = replace(plain, "&amp;" => "", "&lt;" => "", "&gt;" => "", "&quot;" => "", "&#39;" => "")
+    slug = lowercase(strip(plain))
+    slug = replace(slug, r"[^\w\s-]" => "")
+    slug = replace(slug, r"\s" => "-")
+    return slug
+end
+
+function _add_markdown_heading_ids(html_str::AbstractString)
+    return replace(html_str, r"<h([1-4])>(.*?)</h\1>"s => function(m)
+        mat = match(r"^<h([1-4])>(.*?)</h\1>$"s, m)
+        isnothing(mat) && return m
+        lvl = mat.captures[1]
+        inner = mat.captures[2]
+        slug = _github_heading_slug(inner)
+        return "<h$(lvl) id=\"$(slug)\">$(inner)</h$(lvl)>"
+    end)
+end
+
+function _prepare_markdown_display_math(md_str::AbstractString)
+    return replace(md_str, r"\$\$(.+?)\$\$"s => function(m)
+        mat = match(r"^\$\$(.+?)\$\$$"s, m)
+        isnothing(mat) && return m
+        eq = strip(mat.captures[1])
+        return "<div class=\"math-block\">\\[\n$(eq)\n\\]</div>"
+    end)
+end
+
+const _CLUSTER_GUIDE_MD_DEFAULT_PATH = joinpath(@__DIR__, "..", "docs", "cluster_guide.md")
+include_dependency(_CLUSTER_GUIDE_MD_DEFAULT_PATH)
+const _CLUSTER_GUIDE_MD_EMBEDDED = isfile(_CLUSTER_GUIDE_MD_DEFAULT_PATH) ? read(_CLUSTER_GUIDE_MD_DEFAULT_PATH, String) : ""
+
+"""
+    render_cluster_guide_html(outpath; guide_md_path=pkgdir(SMGStats, "docs", "cluster_guide.md"), back_url="index.html", back_label="Back to Catalog Dashboard")
+
+Converts `docs/cluster_guide.md` into a standalone, styled HTML page (`guide.html`) using
+Julia's built-in `Markdown` standard library and lightweight KaTeX CDN scripts to render
+inline (`\\(...\\)`) and centered display (`\\[...\\]`) mathematical equations, tables, and diagrams.
+"""
+function render_cluster_guide_html(outpath::AbstractString;
+    guide_md_path::AbstractString = _CLUSTER_GUIDE_MD_DEFAULT_PATH,
+    back_url::Union{Nothing, AbstractString} = "index.html",
+    back_label::AbstractString = "Back to Catalog Dashboard"
+)
+    md_text = if isfile(guide_md_path)
+        read(guide_md_path, String)
+    elseif !isempty(_CLUSTER_GUIDE_MD_EMBEDDED)
+        _CLUSTER_GUIDE_MD_EMBEDDED
+    else
+        "# Comprehensive Guide to `smgstats cluster`\n\nDocumentation file not found at `$(guide_md_path)`."
+    end
+    prepared_md = _prepare_markdown_display_math(md_text)
+    raw_body_html = sprint(Markdown.html, Markdown.parse(prepared_md))
+    body_html = _add_markdown_heading_ids(raw_body_html)
+
+    html_doc = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SMGStats Clustering Methodology &amp; Guide</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '\\\\[', right: '\\\\]', display: true}, {left: '\$\$', right: '\$\$', display: true}, {left: '\\\\(', right: '\\\\)', display: false}, {left: '\$', right: '\$', display: false}], throwOnError: false});"></script>
+  <style>
+    :root {
+      --bg-main: #f8fafc;
+      --bg-surface: #ffffff;
+      --border-subtle: #e2e8f0;
+      --text-main: #0f172a;
+      --text-muted: #475569;
+      --text-dim: #64748b;
+      --accent-blue: #0284c7;
+      --accent-indigo: #4f46e5;
+      --radius-md: 12px;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      line-height: 1.65;
+      padding-bottom: 5rem;
+      -webkit-font-smoothing: antialiased;
+    }
+    .top-nav {
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .top-nav-inner {
+      max-width: 1140px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 60px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      font-weight: 700;
+      font-size: 1.05rem;
+      color: var(--text-main);
+      text-decoration: none;
+    }
+    .brand-tag {
+      background: linear-gradient(135deg, var(--accent-blue), var(--accent-indigo));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      font-weight: 800;
+    }
+    .brand-badge {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: #eef2ff;
+      border: 1px solid #c7d2fe;
+      color: #4f46e5;
+      padding: 0.18rem 0.5rem;
+      border-radius: 6px;
+    }
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      color: var(--accent-blue);
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 0.35rem 0.8rem;
+      background: #f0f9ff;
+      border: 1px solid #bae6fd;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+    }
+    .back-btn:hover {
+      background: var(--accent-blue);
+      color: #ffffff;
+    }
+    .guide-container {
+      max-width: 1140px;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+    }
+    .guide-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 2.5rem 3rem;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+    .guide-card h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      margin-bottom: 1rem;
+      color: var(--text-main);
+    }
+    .guide-card h2 {
+      font-size: 1.45rem;
+      font-weight: 700;
+      letter-spacing: -0.015em;
+      margin-top: 2.25rem;
+      margin-bottom: 0.85rem;
+      padding-bottom: 0.4rem;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-main);
+    }
+    .guide-card h3 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin-top: 1.75rem;
+      margin-bottom: 0.6rem;
+      color: var(--text-main);
+    }
+    .guide-card h4 {
+      font-size: 0.98rem;
+      font-weight: 600;
+      margin-top: 1.25rem;
+      margin-bottom: 0.45rem;
+      color: var(--text-main);
+    }
+    .guide-card p {
+      margin-bottom: 0.95rem;
+      color: #1e293b;
+      font-size: 0.95rem;
+    }
+    .guide-card ul, .guide-card ol {
+      margin: 0.6rem 0 1.1rem 1.5rem;
+      color: #1e293b;
+      font-size: 0.95rem;
+    }
+    .guide-card li {
+      margin-bottom: 0.35rem;
+    }
+    .guide-card hr {
+      border: none;
+      border-top: 1px solid var(--border-subtle);
+      margin: 2rem 0;
+    }
+    .guide-card a {
+      color: var(--accent-blue);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .guide-card a:hover {
+      text-decoration: underline;
+    }
+    .guide-card code {
+      font-family: var(--font-mono);
+      font-size: 0.84em;
+      background: #f1f5f9;
+      color: #0f172a;
+      padding: 0.15rem 0.38rem;
+      border-radius: 4px;
+      border: 1px solid #e2e8f0;
+    }
+    .guide-card pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 1.1rem 1.25rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      margin: 1rem 0 1.25rem 0;
+      line-height: 1.45;
+    }
+    .guide-card pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      border: none;
+      font-size: 0.82rem;
+    }
+    .guide-card table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0 1.5rem 0;
+      font-size: 0.85rem;
+      display: block;
+      overflow-x: auto;
+    }
+    .guide-card th {
+      background: #f8fafc;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.73rem;
+      letter-spacing: 0.04em;
+      padding: 0.6rem 0.85rem;
+      border-bottom: 2px solid var(--border-subtle);
+      text-align: left;
+      white-space: nowrap;
+    }
+    .guide-card td {
+      padding: 0.55rem 0.85rem;
+      border-bottom: 1px solid #f1f5f9;
+      vertical-align: top;
+      color: #1e293b;
+    }
+    .guide-card tr:hover td {
+      background: #f8fafc;
+    }
+    .math-block {
+      display: block;
+      text-align: center;
+      margin: 1.15rem 0;
+      padding: 0.5rem 0.75rem;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .katex-display {
+      margin: 1.1rem 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 0.25rem 0;
+    }
+  </style>
+</head>
+<body>
+  <nav class="top-nav">
+    <div class="top-nav-inner">
+      <div class="brand">
+        <span class="brand-tag">SMGStats</span>
+        <span>Chromatin Clustering</span>
+        <span class="brand-badge">Methodology &amp; Guide</span>
+      </div>
+      $(!isnothing(back_url) ? """<a href="$(back_url)" class="back-btn">&larr; $(back_label)</a>""" : "")
+    </div>
+  </nav>
+  <main class="guide-container">
+    <article class="guide-card">
+      $(body_html)
+    </article>
+  </main>
+</body>
+</html>
+"""
+    mkpath(dirname(abspath(outpath)))
+    write(outpath, html_doc)
+    return outpath
 end
