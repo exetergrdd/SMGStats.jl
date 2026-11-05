@@ -77,6 +77,45 @@ function print_json(io::IO, d::AbstractDict)
     print(io, "}")
 end
 
+Base.@kwdef struct LocusSummary
+    region_id::String
+    slug::String
+    chrom::String
+    peak_start::Int
+    peak_stop::Int
+    peak_width::Int
+    loc_start::Int
+    loc_stop::Int
+    nearest_gene::String
+    nearest_gene_id::String
+    gene_type::String
+    tss_distance::Int
+    context::String
+    optimal_k::Int
+    total_reads::Int
+    prop_open::Float64
+    min_nrl::Union{Nothing, Float64}
+    max_nrl::Union{Nothing, Float64}
+    has_open_cluster::Bool
+    has_closed_cluster::Bool
+    has_strand_skew::Bool
+    has_hap_skew::Bool
+    has_sample_skew::Bool
+    sig_cpg_count::Int
+    report_url::String
+end
+
+function print_json(io::IO, x::LocusSummary)
+    print(io, "{")
+    for (i, k) in enumerate(fieldnames(LocusSummary))
+        i > 1 && print(io, ",")
+        print_json(io, string(k))
+        print(io, ":")
+        print_json(io, getfield(x, k))
+    end
+    print(io, "}")
+end
+
 
 """
     update_clustering_nrl!(clustering; phase_threshold::Float64=0.035, nrl_feature::Symbol=:fire)
@@ -231,7 +270,7 @@ function extract_locus_summary(clustering; exondata=nothing, slug::Union{Nothing
     sig_cpg_count = (hasproperty(clustering, :modclustertable) && !isnothing(clustering.modclustertable) && nrow(clustering.modclustertable) > 0) ?
         count(r -> r.pvalue < 0.05, eachrow(clustering.modclustertable)) : 0
         
-    return (;
+    return LocusSummary(
         region_id = region_id,
         slug = resolved_slug,
         chrom = chrom,
@@ -240,14 +279,14 @@ function extract_locus_summary(clustering; exondata=nothing, slug::Union{Nothing
         peak_width = peak_width,
         loc_start = loc_start,
         loc_stop = loc_stop,
-        nearest_gene = annot.nearest_gene,
-        nearest_gene_id = annot.nearest_gene_id,
-        gene_type = annot.gene_type,
-        tss_distance = annot.tss_distance,
-        context = annot.context,
-        optimal_k = opt_k,
-        total_reads = total_reads,
-        prop_open = prop_open,
+        nearest_gene = String(annot.nearest_gene),
+        nearest_gene_id = String(annot.nearest_gene_id),
+        gene_type = String(annot.gene_type),
+        tss_distance = Int(annot.tss_distance),
+        context = String(annot.context),
+        optimal_k = Int(opt_k),
+        total_reads = Int(total_reads),
+        prop_open = Float64(prop_open),
         min_nrl = min_nrl,
         max_nrl = max_nrl,
         has_open_cluster = has_open_cluster,
@@ -255,7 +294,7 @@ function extract_locus_summary(clustering; exondata=nothing, slug::Union{Nothing
         has_strand_skew = has_strand_skew,
         has_hap_skew = has_hap_skew,
         has_sample_skew = has_sample_skew,
-        sig_cpg_count = sig_cpg_count,
+        sig_cpg_count = Int(sig_cpg_count),
         report_url = "regions/$(resolved_slug)/report.html"
     )
 end
@@ -319,13 +358,14 @@ function build_cluster_catalog(inputs, outdir;
     end
     
     # 3. Process each region
-    catalog_entries = []
+    catalog_entries = LocusSummary[]
     seen_slugs = Dict{String, Int}()
     p = Progress(n_total, desc="Generating Cluster Catalog: ", barlen=40)
     
     for (idx, fpath) in enumerate(files)
         try
             clustering = load_clustering(fpath; phase_threshold=phase_threshold)
+            reorder_clusters!(clustering)
             base_slug = "$(clustering.chrom)_$(first(clustering.peakloc))_$(last(clustering.peakloc))"
             slug_count = get(seen_slugs, base_slug, 0) + 1
             seen_slugs[base_slug] = slug_count
