@@ -44,13 +44,13 @@ function save_cluster_report_assets(clustering, asset_dir;
     profiles_path = joinpath(asset_dir, "profiles.png")
     save(profiles_path, f_prof, px_per_unit=px_per_unit)
     
-    # 5. NRL: Two separate figures to prevent any collision between the boxplot and the AC grid
+    # 5. NRL: Two separate full-width figures (Row 1: side-by-side FIRE & 6mA read NRL boxplots; Row 2: full-width AC grid)
     k = clustering.optimal_clustering.optimal_k
-    f_nrl_box = Figure(size=(550, 340))
-    boxplot_nrl(clustering; f=f_nrl_box, axx=1, axy=1, direction=:vertical)
+    f_nrl_box = Figure(size=(1500, 320))
+    boxplot_nrl(clustering; f=f_nrl_box, axx=1, axy=1, direction=:vertical, dual=true)
     save(joinpath(asset_dir, "nrl_boxplot.svg"), f_nrl_box)
 
-    f_nrl_spec = Figure(size=(1100, max(260, 200 * cld(k, 4))))
+    f_nrl_spec = Figure(size=(1500, max(280, 230 * cld(k, 4) + 45)))
     plot_spectral_nrl(clustering; f=f_nrl_spec, nrl_feature=:fire, phase_threshold=phase_threshold)
     save(joinpath(asset_dir, "nrl_spectral.svg"), f_nrl_spec)
     
@@ -165,12 +165,15 @@ function render_cluster_report(clustering, outdir;
     longest_only=true, 
     gene_flank=15_000,
     phase_threshold=0.035,
+    peakname::Union{Nothing, AbstractString}=nothing,
+    category::Union{Nothing, AbstractString}=nothing,
     label="", 
     filename="report.html", 
     catalog_path=nothing,
     update_nrl::Bool=true
 )
     update_nrl && update_clustering_nrl!(clustering; phase_threshold=phase_threshold)
+    resolved_peakname, resolved_category = _resolve_peak_meta(clustering; peakname=peakname, category=category)
     mkpath(outdir)
     asset_dir = joinpath(outdir, "assets")
     assets = save_cluster_report_assets(clustering, asset_dir; 
@@ -276,16 +279,21 @@ function render_cluster_report(clustering, outdir;
         end
     end
     
-    # 1. Format compact cluster properties table HTML
+    # 1. Format compact cluster properties table HTML & NRL phasing summary table HTML
     ct_rows = String[]
+    nrl_rows_html = String[]
     for row in eachrow(clustering.clustertable)
         cid = row.cluster
         fire_nrl_str = ismissing(row.nrl) ? "—" : string(row.nrl)
         nrl_6mA_val = hasproperty(row, :nrl_6mA) ? row.nrl_6mA : missing
         nrl_6mA_str = ismissing(nrl_6mA_val) ? "—" : string(nrl_6mA_val)
         
+        is_closed_6mA = hasproperty(row, :is_closed_6mA) && row.is_closed_6mA === true
         status_pill = row.is_closed ? 
             "<span class='status-pill status-closed'>Periodic</span>" : 
+            "<span class='status-pill status-open'>Open</span>"
+        status_pill_6mA = is_closed_6mA ?
+            "<span class='status-pill status-closed'>Periodic</span>" :
             "<span class='status-pill status-open'>Open</span>"
             
         strand_badge = haskey(strand_by_cluster, cid) ? 
@@ -302,10 +310,17 @@ function render_cluster_report(clustering, outdir;
 
         c_reads = hasproperty(row, :totalreads) ? row.totalreads : (hasproperty(row, :count) ? row.count : (1 <= cid <= length(cluster_counts) ? cluster_counts[cid] : row.counts_sample))
 
-        phasing_str = isfinite(row.phasing_score) ? string(round(row.phasing_score, digits=3)) : "—"
-        if hasproperty(row, :phasing_score_6mA) && isfinite(row.phasing_score_6mA)
-            phasing_str *= " / " * string(round(row.phasing_score_6mA, digits=3))
-        end
+        phasing_fire_str = isfinite(row.phasing_score) ? string(round(row.phasing_score, digits=3)) : "—"
+        phasing_6mA_str  = (hasproperty(row, :phasing_score_6mA) && isfinite(row.phasing_score_6mA)) ? string(round(row.phasing_score_6mA, digits=3)) : "—"
+        phasing_str = phasing_6mA_str == "—" ? phasing_fire_str : "$phasing_fire_str / $phasing_6mA_str"
+
+        peak_fire_str = (hasproperty(row, :peak_type) && row.peak_type != :none) ? string(row.peak_type) : "—"
+        peak_6mA_str  = (hasproperty(row, :peak_type_6mA) && row.peak_type_6mA != :none) ? string(row.peak_type_6mA) : "—"
+
+        mean_r_fire = (hasproperty(row, :mean_read_nrl) && !ismissing(row.mean_read_nrl) && isfinite(row.mean_read_nrl)) ? "$(round(row.mean_read_nrl, digits=1)) bp" : "—"
+        n_r_fire    = hasproperty(row, :total_valid_nrls) ? row.total_valid_nrls : 0
+        mean_r_6mA  = (hasproperty(row, :mean_read_nrl_6mA) && !ismissing(row.mean_read_nrl_6mA) && isfinite(row.mean_read_nrl_6mA)) ? "$(round(row.mean_read_nrl_6mA, digits=1)) bp" : "—"
+        n_r_6mA     = hasproperty(row, :total_valid_nrls_6mA) ? row.total_valid_nrls_6mA : 0
 
         push!(ct_rows, """
         <tr>
@@ -324,10 +339,31 @@ function render_cluster_report(clustering, outdir;
           <td>$hap_badge</td>
           <td>$sample_badge</td>
         </tr>""")
+
+        push!(nrl_rows_html, """
+        <tr>
+          <td><strong>$cid</strong></td>
+          <td><strong>$c_reads</strong></td>
+          <td><strong>$fire_nrl_str</strong></td>
+          <td>$phasing_fire_str</td>
+          <td>$peak_fire_str</td>
+          <td>$status_pill</td>
+          <td><strong>$nrl_6mA_str</strong></td>
+          <td>$phasing_6mA_str</td>
+          <td>$peak_6mA_str</td>
+          <td>$status_pill_6mA</td>
+          <td>$mean_r_fire <span class="text-dim">(n=$n_r_fire)</span></td>
+          <td>$mean_r_6mA <span class="text-dim">(n=$n_r_6mA)</span></td>
+        </tr>""")
     end
     clustertable_html = _html_compact_table(
-        ["Cluster", "Reads", "Mean Cost", "Length (bp)", "FIRE (%)", "6mA (%)", "5mC (%)", "FIRE NRL (bp)", "6mA NRL (bp)", "Phasing", "Status", "Strand Bias", "Allelic Bias", "Sample Bias"],
+        ["Cluster", "Reads", "Mean Cost", "Length (bp)", "FIRE (%)", "6mA (%)", "5mC (%)", "FIRE NRL (bp)", "6mA NRL (bp)", "Phasing (FIRE / 6mA)", "Status", "Strand Bias", "Allelic Bias", "Sample Bias"],
         ct_rows
+    )
+    nrl_table_html = _html_compact_table(
+        ["Cluster", "Reads", "FIRE NRL (bp)", "FIRE Phasing", "FIRE Harmonic", "FIRE Call", "6mA NRL (bp)", "6mA Phasing", "6mA Harmonic", "6mA Call", "Read Mean NRL (FIRE)", "Read Mean NRL (6mA)"],
+        nrl_rows_html;
+        margin_top=true
     )
     
     # 2. Format Strand Fisher table HTML
@@ -591,11 +627,12 @@ function render_cluster_report(clustering, outdir;
         <!-- Header Banner -->
         <header class="hero-banner">
           $(!isnothing(catalog_path) ? """<div style="margin-bottom: 0.85rem;"><a href="$(catalog_path)" style="display: inline-flex; align-items: center; gap: 0.4rem; color: #0284c7; text-decoration: none; font-size: 0.85rem; font-weight: 600; padding: 0.3rem 0.75rem; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 6px; transition: all 0.15s ease;">&larr; Back to Catalog Dashboard</a></div>""" : "")
-          <h1>Single-Molecule Cluster Report</h1>
-          <p>Locus: <strong>$chrom:$loc_start-$loc_stop</strong> (Peak: <code>$chrom:$peak_start-$peak_stop</code>, flank ±$(flank_bp) bp)</p>
+          <h1>Single-Molecule Cluster Report: <code>$resolved_peakname</code></h1>
+          <p>Locus: <strong>$chrom:$loc_start-$loc_stop</strong> &bull; Target Peak: <code>$chrom:$peak_start-$peak_stop</code> (flank ±$(flank_bp) bp) &bull; PeakName: <strong>$resolved_peakname</strong> &bull; Category: <strong>$resolved_category</strong></p>
           <div class="badge-bar">
             <span class="badge badge-k">Optimal k* = $opt_k</span>
             <span class="badge badge-reads">$total_reads Spanning Reads</span>
+            <span class="badge badge-ctx">Category: $resolved_category</span>
             $(!isempty(annot.nearest_gene) ? "<span class='badge badge-gene'>Gene: $(annot.nearest_gene)</span>" : "")
             $(!isempty(annot.context) ? "<span class='badge badge-ctx'>$(annot.context)</span>" : "")
             $(annot.tss_distance != 0 ? "<span class='badge badge-tss'>$tss_dist_str</span>" : "")
@@ -648,21 +685,17 @@ function render_cluster_report(clustering, outdir;
         <!-- 4. Nucleosome Architecture & Spectral NRL -->
         <section class="report-section">
           <h3>4. Nucleosome Phasing & Repeat Length (NRL)</h3>
-          <p class="section-desc">Single-molecule nucleosome repeat length distributions alongside cluster centroid autocorrelation wave fits (FIRE and 6mA channels).</p>
-          <div class="two-col-grid">
-            <div>
-              <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.35rem;">Single-Molecule NRL Distribution</div>
-              <div class="figure-wrapper">
-                <img src="$(assets.nrl_box)" alt="NRL Boxplot per Cluster" onclick="openLightbox(this.src)">
-              </div>
-            </div>
-            <div>
-              <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.35rem;">Spectral Autocorrelation & Harmonic Cosine Fits (FIRE & 6mA)</div>
-              <div class="figure-wrapper">
-                <img src="$(assets.nrl_spec)" alt="Centroid Spectral NRL Fits" onclick="openLightbox(this.src)">
-              </div>
-            </div>
+          <p class="section-desc">Single-molecule nucleosome repeat length distributions (FIRE and 6mA) alongside cluster centroid autocorrelation wave fits and phasing summary metrics.</p>
+          <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.35rem;">Single-Molecule Read-Level NRL Distributions (FIRE vs 6mA)</div>
+          <div class="figure-wrapper">
+            <img src="$(assets.nrl_box)" alt="Read-Level NRL Boxplots (FIRE & 6mA)" onclick="openLightbox(this.src)">
           </div>
+          <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin-top: 1rem; margin-bottom: 0.35rem;">Cluster Centroid Spectral Autocorrelation & Harmonic Cosine Fits (FIRE & 6mA)</div>
+          <div class="figure-wrapper">
+            <img src="$(assets.nrl_spec)" alt="Centroid Spectral NRL Fits" onclick="openLightbox(this.src)">
+          </div>
+          <h4>Spectral NRL & Phasing Calls (FIRE vs 6mA)</h4>
+          $nrl_table_html
         </section>
 
         <!-- 5. Assignment Uncertainty -->
