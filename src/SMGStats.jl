@@ -22,8 +22,6 @@ using JLD2
 using ImageFiltering
 
 using HypothesisTests
-using Clustering
-using Distances
 using SwarmMakie
 
 
@@ -40,7 +38,7 @@ export firestats, unicodeplot, displayplots, writeallstats, readstats, readmulti
     loadbed, bedintervals, buildintervalset, bedchromintervals, buildchromintervalset,
     differentialaccessibility,
     smglog,
-    ModAllFireRead, ModGroupFileReader, collectstencilreads, read_depth_table, featurematrix, select_kmeans_k_bic,
+    ModAllFireRead, ModGroupFileReader, collectstencilreads, read_depth_table, featurematrix, select_k_kmeans_bic,
     load_exondata, annotate_locus, filter_gene_models, pack_gene_rows, plot_genemodels!,
     plotclustersummary, plot_genemodel_track, plot_cluster_tracks, plot_cluster_profiles, plot_spectral_nrl,
     plot_5mC_volcano, plot_5mC_diff_heat, strand_diagnostics, hap_diagnostics, sample_diagnostics,
