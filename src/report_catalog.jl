@@ -381,11 +381,85 @@ function extract_locus_summary(clustering; exondata=nothing, slug::Union{Nothing
     )
 end
 
+function _deterministic_file_slugs(files::AbstractVector{<:AbstractString})
+    n = length(files)
+    slugs = Vector{String}(undef, n)
+    seen = Dict{String, Int}()
+    rx = r"_(chr[^_]+|\d+|X|Y|M|MT)_(\d+)_(\d+)_\d+_\d+_"
+    for (i, fpath) in enumerate(files)
+        bname = replace(basename(fpath), r"\.jld2$" => "")
+        m = match(rx, bname)
+        base_slug = !isnothing(m) ? "$(m.captures[1])_$(m.captures[2])_$(m.captures[3])" : bname
+        c = get(seen, base_slug, 0) + 1
+        seen[base_slug] = c
+        slugs[i] = c == 1 ? base_slug : "$(base_slug)_$(c)"
+    end
+    return slugs
+end
+
+function _spawn_report_workers(
+    inputs,
+    outdir::AbstractString,
+    exondata,
+    peakfile,
+    longest_only::Bool,
+    gene_flank::Int,
+    phase_threshold::Float64,
+    skip_existing::Bool,
+    limit,
+    workers::Int
+)
+    julia_cmd = Base.julia_cmd()
+    proj_dir = dirname(@__DIR__)
+    input_arg = inputs isa AbstractString ? abspath(inputs) : abspath.(inputs)
+    outdir_abs = abspath(outdir)
+    exon_arg = exondata isa AbstractString ? abspath(exondata) : nothing
+    peak_arg = peakfile isa AbstractString ? abspath(peakfile) : nothing
+
+    smglog("Catalog: Spawning $workers OS worker processes to render individual region reports...")
+    procs = Base.Process[]
+    for w in 1:workers
+        expr = """
+        using SMGStats
+        build_cluster_catalog(
+            $(repr(input_arg)),
+            $(repr(outdir_abs));
+            exondata = $(repr(exon_arg)),
+            peakfile = $(repr(peak_arg)),
+            longest_only = $(repr(longest_only)),
+            gene_flank = $(repr(gene_flank)),
+            phase_threshold = $(repr(phase_threshold)),
+            generate_reports = true,
+            build_index = false,
+            skip_existing = $(repr(skip_existing)),
+            limit = $(repr(limit)),
+            chunk = $w,
+            nchunks = $workers,
+            workers = 1
+        )
+        """
+        cmd = `$(julia_cmd) --project=$(proj_dir) --startup-file=no -t 1 -e $(expr)`
+        push!(procs, run(pipeline(cmd, stdout=stdout, stderr=stderr), wait=false))
+    end
+
+    failed = 0
+    for (w, proc) in enumerate(procs)
+        wait(proc)
+        if !success(proc)
+            failed += 1
+            smglog("Warning: Report worker $w/$workers exited with non-zero status.")
+        end
+    end
+    smglog("Catalog: All $workers report worker processes finished ($failed failed).")
+    return failed == 0
+end
+
 """
-    build_cluster_catalog(inputs, outdir; exondata=nothing, longest_only=true, generate_reports=true, skip_existing=true, limit=nothing, title="SMGStats Chromatin Cluster Catalog")
+    build_cluster_catalog(inputs, outdir; exondata=nothing, longest_only=true, generate_reports=true, skip_existing=true, limit=nothing, workers=1, chunk=1, nchunks=1, title="SMGStats Chromatin Cluster Catalog")
 
 Scans clustering results (directory of `.jld2` files or list of file paths), computes summary metrics,
-generates individual interactive HTML reports, and builds a unified multi-region catalog dashboard (`index.html` + `catalog.json`).
+builds the unified multi-region catalog dashboard (`index.html` + `catalog.json` + `guide.html`) immediately,
+and renders individual interactive HTML reports (optionally across `workers` parallel OS processes or a `chunk`/`nchunks` slice).
 """
 function build_cluster_catalog(inputs, outdir; 
     exondata=nothing, 
@@ -394,8 +468,12 @@ function build_cluster_catalog(inputs, outdir;
     gene_flank=15_000,
     phase_threshold=0.035,
     generate_reports=true, 
+    build_index=true,
     skip_existing=true, 
     limit=nothing,
+    workers::Int=1,
+    chunk::Int=1,
+    nchunks::Int=1,
     title="SMGStats Chromatin Cluster Catalog"
 )
     mkpath(outdir)
@@ -430,7 +508,7 @@ function build_cluster_catalog(inputs, outdir;
         error("No .jld2 clustering files found in inputs: $inputs")
     end
     
-    smglog("Catalog: Found $n_total clustering files to index into $outdir")
+    file_slugs = _deterministic_file_slugs(files)
     
     # 2. Load exondata annotations and optional peakfile lookup
     loaded_exondata = if exondata isa AbstractString
@@ -441,62 +519,86 @@ function build_cluster_catalog(inputs, outdir;
     end
     peak_lookup = _build_peak_lookup(peakfile)
     
-    # 3. Process each region
-    catalog_entries = LocusSummary[]
-    seen_slugs = Dict{String, Int}()
-    p = Progress(n_total, desc="Generating Cluster Catalog: ", barlen=40)
-    
-    for (idx, fpath) in enumerate(files)
-        try
-            clustering = load_clustering(fpath; phase_threshold=phase_threshold)
-            reorder_clusters!(clustering)
-            base_slug = "$(clustering.chrom)_$(first(clustering.peakloc))_$(last(clustering.peakloc))"
-            slug_count = get(seen_slugs, base_slug, 0) + 1
-            seen_slugs[base_slug] = slug_count
-            unique_slug = slug_count == 1 ? base_slug : "$(base_slug)_$(slug_count)"
+    index_path = joinpath(outdir, "index.html")
 
-            sum_entry = extract_locus_summary(clustering; exondata=loaded_exondata, slug=unique_slug, idx=idx, peak_lookup=peak_lookup)
-            push!(catalog_entries, sum_entry)
-            
-            if generate_reports
-                region_dir = joinpath(outdir, "regions", sum_entry.slug)
+    # 3. Phase 1: Build master catalog index (lock-free multi-threaded summary extraction)
+    if build_index
+        smglog("Catalog: Indexing $n_total clustering files into $outdir (threads = $(Threads.nthreads()))...")
+        raw_entries = Vector{Union{Nothing, LocusSummary}}(nothing, n_total)
+        Threads.@threads for idx in 1:n_total
+            fpath = files[idx]
+            try
+                clustering = load_clustering(fpath; phase_threshold=phase_threshold)
+                reorder_clusters!(clustering)
+                raw_entries[idx] = extract_locus_summary(
+                    clustering;
+                    exondata=loaded_exondata,
+                    slug=file_slugs[idx],
+                    idx=idx,
+                    peak_lookup=peak_lookup
+                )
+            catch err
+                smglog("Warning: Failed indexing $fpath: $err")
+            end
+        end
+
+        catalog_entries = LocusSummary[e for e in raw_entries if !isnothing(e)]
+
+        json_path = joinpath(outdir, "catalog.json")
+        open(json_path, "w") do io
+            print_json(io, catalog_entries)
+        end
+        smglog("Catalog: Saved JSON summary to $json_path")
+
+        guide_path = joinpath(outdir, "guide.html")
+        render_cluster_guide_html(guide_path; back_url="index.html", back_label="Back to Catalog Dashboard")
+
+        html_content = generate_catalog_html(catalog_entries, title)
+        write(index_path, html_content)
+        smglog("Catalog: Rendered Master Dashboard to $index_path")
+    end
+
+    # 4. Phase 2: Render individual region HTML reports
+    if generate_reports
+        if workers > 1 && nchunks == 1
+            _spawn_report_workers(
+                inputs, outdir, exondata, peakfile,
+                longest_only, gene_flank, phase_threshold,
+                skip_existing, limit, min(workers, n_total)
+            )
+        else
+            indices = chunk:nchunks:n_total
+            desc_str = nchunks > 1 ? "Worker $chunk/$nchunks Rendering Reports: " : "Rendering Region Reports: "
+            p = Progress(length(indices), desc=desc_str, barlen=40)
+            for idx in indices
+                fpath = files[idx]
+                slug = file_slugs[idx]
+                region_dir = joinpath(outdir, "regions", slug)
                 report_html_path = joinpath(region_dir, "report.html")
                 if !(skip_existing && isfile(report_html_path))
-                    render_cluster_report(clustering, region_dir; 
-                        exondata=loaded_exondata, 
-                        longest_only=longest_only, 
-                        gene_flank=gene_flank,
-                        phase_threshold=phase_threshold,
-                        peakname=sum_entry.peak_name,
-                        category=sum_entry.category,
-                        catalog_path="../../index.html",
-                        guide_path="../../guide.html",
-                        update_nrl=false
-                    )
+                    try
+                        clustering = load_clustering(fpath; phase_threshold=phase_threshold)
+                        reorder_clusters!(clustering)
+                        pname, pcat = _resolve_peak_meta(clustering; idx=idx, peak_lookup=peak_lookup)
+                        render_cluster_report(clustering, region_dir; 
+                            exondata=loaded_exondata, 
+                            longest_only=longest_only, 
+                            gene_flank=gene_flank,
+                            phase_threshold=phase_threshold,
+                            peakname=pname,
+                            category=pcat,
+                            catalog_path="../../index.html",
+                            guide_path="../../guide.html",
+                            update_nrl=false
+                        )
+                    catch err
+                        smglog("Warning: Failed rendering report for $fpath: $err")
+                    end
                 end
+                next!(p)
             end
-        catch err
-            smglog("Warning: Failed processing $fpath: $err")
         end
-        next!(p)
     end
-    
-    # 4. Save catalog.json
-    json_path = joinpath(outdir, "catalog.json")
-    open(json_path, "w") do io
-        print_json(io, catalog_entries)
-    end
-    smglog("Catalog: Saved JSON summary to $json_path")
-    
-    # 5. Render Methodology & Guide HTML
-    guide_path = joinpath(outdir, "guide.html")
-    render_cluster_guide_html(guide_path; back_url="index.html", back_label="Back to Catalog Dashboard")
-
-    # 6. Generate and save master index.html
-    html_content = generate_catalog_html(catalog_entries, title)
-    index_path = joinpath(outdir, "index.html")
-    write(index_path, html_content)
-    smglog("Catalog: Rendered Master Dashboard to $index_path")
     
     return index_path
 end

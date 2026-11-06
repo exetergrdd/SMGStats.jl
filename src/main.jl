@@ -308,6 +308,9 @@ function parse_commandline()
         "--exondata", "-e"
             help = "Path to exondata GTF (.gtf.gz) or arrow file for gene models and TSS distances"
             default = nothing
+        "--peaks", "-p"
+            help = "Optional target peaks BED/TSV file to supply PeakName and Category labels"
+            default = nothing
         "--longest_only"
             help = "Plot only the longest transcript model per gene"
             arg_type = Bool
@@ -315,9 +318,24 @@ function parse_commandline()
         "--no_reports"
             help = "Skip rendering individual region reports (only generate catalog index)"
             action = :store_true
+        "--no_index"
+            help = "Skip building master catalog index.html/catalog.json (only render region reports)"
+            action = :store_true
         "--force"
             help = "Overwrite and regenerate existing HTML reports"
             action = :store_true
+        "--workers", "-w"
+            help = "Number of parallel OS worker processes to spawn for rendering region reports"
+            arg_type = Int
+            default = 1
+        "--chunk"
+            help = "1-based worker chunk index when splitting report rendering externally (1 <= chunk <= nchunks)"
+            arg_type = Int
+            default = 1
+        "--nchunks"
+            help = "Total number of chunks when splitting report rendering externally"
+            arg_type = Int
+            default = 1
         "--limit"
             help = "Limit number of regions to process (for testing)"
             arg_type = Int
@@ -441,17 +459,27 @@ function julia_main()::Cint
         input_path = opts["input"]
         out_path = opts["output"]
         exondata_path = opts["exondata"]
+        peak_path = opts["peaks"]
         longest_only = opts["longest_only"]
         generate_reports = !opts["no_reports"]
+        build_index = !opts["no_index"]
         skip_existing = !opts["force"]
+        workers = opts["workers"]
+        chunk = opts["chunk"]
+        nchunks = opts["nchunks"]
         limit = opts["limit"] > 0 ? opts["limit"] : nothing
         title = opts["title"]
 
         build_cluster_catalog(input_path, out_path;
             exondata=exondata_path,
+            peakfile=peak_path,
             longest_only=longest_only,
             generate_reports=generate_reports,
+            build_index=build_index,
             skip_existing=skip_existing,
+            workers=workers,
+            chunk=chunk,
+            nchunks=nchunks,
             limit=limit,
             title=title
         )
