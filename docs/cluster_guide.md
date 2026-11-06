@@ -26,8 +26,11 @@ Rather than averaging accessibility and epigenetic modifications across bulk cel
    - [5.2 Cluster Table (`*.clustertable.tsv.gz`)](#52-cluster-table-clustertabletsvgz)
    - [5.3 5mC Modification Table (`*.modclustertable.5mC.tsv.gz`)](#53-5mc-modification-table-modclustertable5mctsvgz)
    - [5.4 Serialized Portable Data (`*.jld2`)](#54-serialized-portable-data-jld2)
-6. [Glossary of Key Terms](#6-glossary-of-key-terms)
-7. [Recommended Parameter Presets](#7-recommended-parameter-presets)
+6. [Generating Interactive HTML Reports & Master Catalog (`smgstats report`)](#6-generating-interactive-html-reports--master-catalog-smgstats-report)
+   - [6.1 Report CLI Options](#61-report-cli-options)
+   - [6.2 Multi-Process Parallel Report Rendering (`--workers` & `--chunk`)](#62-multi-process-parallel-report-rendering---workers---chunk)
+7. [Glossary of Key Terms](#7-glossary-of-key-terms)
+8. [Recommended Parameter Presets](#8-recommended-parameter-presets)
 
 ---
 
@@ -539,7 +542,58 @@ reorder_clusters!(data; by=:mean_rate_mod_5mC, rev=true) # Order by 5mC methylat
 
 ---
 
-## 6. Glossary of Key Terms
+## 6. Generating Interactive HTML Reports & Master Catalog (`smgstats report`)
+
+Once `smgstats cluster` has generated `.jld2` files, `smgstats report` builds a standalone interactive web catalog (`index.html`, `catalog.json`, and `guide.html`) along with detailed per-locus HTML diagnostic reports (`regions/<slug>/report.html`).
+
+### 6.1 Report CLI Options
+
+| Argument | Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `--input` | `-i` | Path | **Required** | Input directory containing `.jld2` files, or a single `.jld2` file. |
+| `--output` | `-o` | Directory Path | **Required** | Output directory for the master catalog dashboard (`index.html`) and `regions/` reports. |
+| `--exondata` | `-e` | File Path | `nothing` | Optional GTF (`.gtf.gz`) or Arrow file for gene model tracks, nearest-gene annotation, and TSS distance calculation. |
+| `--peaks` | `-p` | File Path | `nothing` | Optional target peaks BED/TSV file to supply or override `PeakName` and `Category` labels when reporting on older `.jld2` files. |
+| `--longest_only` | | Boolean (`true`/`false`) | `true` | Plot only the longest transcript isoform per gene on the gene model track. |
+| `--workers` | `-w` | Integer | `1` | Number of parallel OS worker processes to spawn for rendering per-region CairoMakie figures and HTML reports. |
+| `--chunk` | | Integer | `1` | 1-based worker chunk index ($1 \le \text{chunk} \le \text{nchunks}$) when splitting report generation externally across cluster jobs. |
+| `--nchunks` | | Integer | `1` | Total number of chunks when splitting report generation externally. |
+| `--no_reports` | | Flag | `false` | Build only the master catalog (`index.html`, `catalog.json`, `guide.html`) and skip rendering individual region reports. |
+| `--no_index` | | Flag | `false` | Skip building the master catalog index and only render the individual region reports for the specified chunk. |
+| `--force` | | Flag | `false` | Overwrite and regenerate existing `report.html` files (by default, existing region reports are skipped). |
+| `--limit` | | Integer | `-1` | Limit the number of regions processed (useful for quick testing). |
+| `--title` | | String | `"SMGStats Chromatin Cluster Catalog"` | Custom header title for the master catalog dashboard. |
+
+---
+
+### 6.2 Multi-Process Parallel Report Rendering (`--workers` & `--chunk`)
+
+`smgstats report` uses a two-phase architecture designed to scale cleanly to thousands of clustered loci:
+1. **Phase 1 (Instant Catalog Indexing)**: Extracts `LocusSummary` metadata across all `.jld2` files in parallel using threads (`-t`) and writes `index.html`, `catalog.json`, and `guide.html` **immediately** before plotting begins. You can open `index.html` right away while individual reports render.
+2. **Phase 2 (Parallel Process Rendering)**: Because `CairoMakie` / `FreeType` font rendering is process-bound, passing `-w N` (`--workers N`) spawns $N$ independent OS worker processes, each rendering a disjoint slice (`w:N:n_total`) of region reports in parallel with zero lock contention.
+
+```bash
+# Single-command parallel report generation using 16 threads for indexing and 24 OS worker processes for plotting:
+smgstats -t 16 report \
+    -i ./cluster_results \
+    -o ./cluster_catalog \
+    -e gencode.v46.annotation.gtf.gz \
+    -p peaks.tsv \
+    --workers 24
+```
+
+For HPC / SLURM job arrays where you want to distribute report rendering across separate compute nodes:
+```bash
+# Step 1: Build master catalog index.html in seconds
+smgstats -t 8 report -i ./cluster_results -o ./cluster_catalog -e gencode.gtf.gz --no_reports
+
+# Step 2: Run array workers 1..24 across nodes (each renders only its deterministic slice i:24:n_total)
+smgstats report -i ./cluster_results -o ./cluster_catalog -e gencode.gtf.gz --no_index --chunk ${SLURM_ARRAY_TASK_ID} --nchunks 24
+```
+
+---
+
+## 7. Glossary of Key Terms
 
 ### Biological & Genomic Terms
 - **Single-Molecule Genomics / SMG**: Sequencing technologies that read intact, native DNA molecules without PCR amplification, preserving long-range multi-kilobase spatial correlations.
@@ -566,7 +620,7 @@ reorder_clusters!(data; by=:mean_rate_mod_5mC, rev=true) # Order by 5mC methylat
 
 ---
 
-## 7. Recommended Parameter Presets
+## 8. Recommended Parameter Presets
 
 ### A. High-Accuracy Production Run (Default)
 Best for finalizing results across publication regions. Thoroughly explores the clustering landscape to guarantee identification of rare chromatin states.
@@ -578,7 +632,8 @@ smgstats -t 8 cluster \
     --dw 600 \
     --dx 15 \
     --features fire,mod_6mA \
-    --ks 2:20,24:4:40 \
+    --ks 1:20,22:2:60 \
+    --max_k_fraction 0.65 \
     --n_ils_restarts 2 \
     --n_restarts 20 \
     --rejection_neighbourhood_fraction 0.08 \
