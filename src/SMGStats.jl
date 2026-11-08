@@ -44,7 +44,8 @@ export firestats, unicodeplot, displayplots, writeallstats, readstats, readmulti
     load_exondata, annotate_locus, filter_gene_models, pack_gene_rows, plot_genemodels!,
     plotclustersummary, plot_genemodel_track, plot_cluster_tracks, plot_cluster_profiles, plot_spectral_nrl,
     plot_5mC_volcano, plot_5mC_diff_heat, strand_diagnostics, hap_diagnostics, sample_diagnostics,
-    render_cluster_report, render_cluster_guide_html, LocusSummary, extract_locus_summary, build_cluster_catalog, load_clustering
+    render_cluster_report, render_cluster_guide_html, rebuild_catalog_html, LocusSummary, extract_locus_summary, build_cluster_catalog, load_clustering,
+    LocalNRLWorkspace, LocalNRLReadResult, LocalNRLCohortResult, local_nrl_scan, plot_read_local_nrl, plot_local_nrl_overview
 
 
 
@@ -78,6 +79,7 @@ include("diff.jl")
 include("countfires.jl")
 include("collectreads.jl")
 include("stencilcluster.jl")
+include("local_nrl.jl")
 include("exondata.jl")
 include("stencil_cluster_report.jl")
 include("html_cluster_report.jl")

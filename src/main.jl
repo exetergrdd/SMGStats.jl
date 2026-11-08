@@ -300,8 +300,8 @@ function parse_commandline()
 
     @add_arg_table! s["report"] begin
         "--input", "-i"
-            help = "Input directory containing cluster .jld2 files, or a single .jld2 file"
-            required = true
+            help = "Input directory containing cluster .jld2 files, or a single .jld2 file (optional if rebuilding UI from existing catalog.json)"
+            default = nothing
         "--output", "-o"
             help = "Output directory for HTML reports and master catalog"
             required = true
@@ -470,19 +470,23 @@ function julia_main()::Cint
         limit = opts["limit"] > 0 ? opts["limit"] : nothing
         title = opts["title"]
 
-        build_cluster_catalog(input_path, out_path;
-            exondata=exondata_path,
-            peakfile=peak_path,
-            longest_only=longest_only,
-            generate_reports=generate_reports,
-            build_index=build_index,
-            skip_existing=skip_existing,
-            workers=workers,
-            chunk=chunk,
-            nchunks=nchunks,
-            limit=limit,
-            title=title
-        )
+        if isnothing(input_path)
+            rebuild_catalog_html(out_path; title=title)
+        else
+            build_cluster_catalog(input_path, out_path;
+                exondata=exondata_path,
+                peakfile=peak_path,
+                longest_only=longest_only,
+                generate_reports=generate_reports,
+                build_index=build_index,
+                skip_existing=skip_existing,
+                workers=workers,
+                chunk=chunk,
+                nchunks=nchunks,
+                limit=limit,
+                title=title
+            )
+        end
     end
 
     return 0

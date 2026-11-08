@@ -146,3 +146,95 @@ end
 tt(x::String) = x
 tt(x) = string(x)
 tt(x::Float64) = string(round(x, digits=2))
+
+function htmlmultireport(data, path::String, file="multireport.html")
+    statnames = sort(collect(keys(data)))
+    body = IOBuffer()
+
+    println(body, """
+    <header class="container sticky-header">
+    <h4>Multi-Sample Comparison</h4>
+    <hr>
+    </header>
+    <main class="container">
+    <aside>
+    <nav>
+    <h6>Contents</h6>
+    <small>
+    <ul>
+    """)
+    for stat in statnames
+        println(body, "<li><a href=\"#", stat, "\">", statname(stat) ,"</a></li>")
+    end
+    println(body, """
+    </ul>
+    </small>
+    </nav>
+    </aside>
+    <section>
+    """)
+
+    for stat in statnames
+        f = plotmultistat(String(stat), data[stat])
+        println(body, "<article id=\"", stat, "\">")
+        println(body, "<h5>", statname(stat), ":</h5>")
+        show(body, MIME"image/svg+xml"(), f)
+        println(body, "</article>")
+    end
+    println(body, """
+    </section>
+    </div>
+    </main>
+    """)
+
+    filepath  = joinpath(path, file)
+    io = open(filepath, "w")
+    print(io, """
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <title>Multi-Sample Report</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <style>
+    .sticky-header {
+        position: sticky;
+        top: 0;
+        background: var(--pico-background-color);
+        z-index: 1000;
+        padding: 0.5rem 0;
+    }
+    main {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2rem;
+    }
+    aside {
+      flex: 0 0 220px;
+      position: sticky;
+      top: 4.5rem;
+      align-self: flex-start;
+      height: fit-content;
+    }
+    section {
+      flex: 1 1 auto;
+      min-width: 300px;
+    }
+    aside nav ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    article[id] {
+        scroll-margin-top: 4.5rem;
+    }
+    </style>
+    </head>
+    <body>
+    $(String(take!(body)))
+    </body>
+    </html>
+    """)
+    close(io)
+    filepath
+end

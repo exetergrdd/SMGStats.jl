@@ -605,6 +605,35 @@ end
 
 
 """
+    rebuild_catalog_html(outdir::AbstractString; title::AbstractString="SMGStats Chromatin Cluster Catalog")
+
+Rebuilds `index.html` and `guide.html` directly from an existing `<outdir>/catalog.json` file without
+reading `.jld2` clustering files or regenerating any region figures/reports.
+"""
+function rebuild_catalog_html(outdir::AbstractString; title::AbstractString="SMGStats Chromatin Cluster Catalog")
+    json_path = joinpath(outdir, "catalog.json")
+    isfile(json_path) || error("Cannot rebuild catalog HTML: $json_path does not exist. Run build_cluster_catalog first.")
+    json_data = read(json_path, String)
+
+    # Extract summary KPI counts directly from catalog.json
+    n_regions = count(_ -> true, eachmatch(r"\"region_id\"\s*:", json_data))
+    k1_count = count(_ -> true, eachmatch(r"\"optimal_k\"\s*:\s*1\b", json_data))
+    multi_state_count = max(0, n_regions - k1_count)
+    promoter_count = count(_ -> true, eachmatch(r"\"context\"\s*:\s*\"Promoter\"", json_data))
+    hap_skew_count = count(_ -> true, eachmatch(r"\"has_hap_skew\"\s*:\s*true\b", json_data))
+
+    guide_path = joinpath(outdir, "guide.html")
+    render_cluster_guide_html(guide_path; catalog_path="index.html")
+
+    index_path = joinpath(outdir, "index.html")
+    html_str = _render_catalog_html_from_json(json_data, title, n_regions, multi_state_count, promoter_count, hap_skew_count)
+    write(index_path, html_str)
+    smglog("Catalog: Rebuilt $index_path and $guide_path from $json_path ($n_regions regions)")
+    return index_path
+end
+
+
+"""
     generate_catalog_html(catalog_entries, title)
 
 Constructs the full, standalone, high-performance web dashboard for exploring multi-region clustering results.
@@ -613,15 +642,22 @@ Embeds the catalog dataset as JSON for zero-CORS instant offline viewing.
 function generate_catalog_html(catalog_entries, title)
     json_data = to_json(catalog_entries)
     n_regions = length(catalog_entries)
-    
-    # Compute summary KPIs
     multi_state_count = count(r -> r.optimal_k > 1, catalog_entries)
-    pct_multi = n_regions > 0 ? round(multi_state_count / n_regions * 100, digits=1) : 0.0
-    
     promoter_count = count(r -> r.context == "Promoter", catalog_entries)
-    pct_promoter = n_regions > 0 ? round(promoter_count / n_regions * 100, digits=1) : 0.0
-    
     hap_skew_count = count(r -> r.has_hap_skew, catalog_entries)
+    return _render_catalog_html_from_json(json_data, title, n_regions, multi_state_count, promoter_count, hap_skew_count)
+end
+
+function _render_catalog_html_from_json(
+    json_data::AbstractString,
+    title::AbstractString,
+    n_regions::Int,
+    multi_state_count::Int,
+    promoter_count::Int,
+    hap_skew_count::Int
+)
+    pct_multi = n_regions > 0 ? round(multi_state_count / n_regions * 100, digits=1) : 0.0
+    pct_promoter = n_regions > 0 ? round(promoter_count / n_regions * 100, digits=1) : 0.0
     pct_hap = n_regions > 0 ? round(hap_skew_count / n_regions * 100, digits=1) : 0.0
     
     return """
@@ -914,6 +950,65 @@ function generate_catalog_html(catalog_entries, title)
       border-color: var(--accent-blue);
       color: #0369a1;
       font-weight: 600;
+    }
+    .chip-toggle.require {
+      background: #dcfce7;
+      border-color: #16a34a;
+      color: #15803d;
+      font-weight: 600;
+    }
+    .chip-toggle.exclude {
+      background: #ffe4e6;
+      border-color: #e11d48;
+      color: #be123c;
+      font-weight: 600;
+    }
+    .k-range-box {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: var(--radius-md);
+      padding: 0.2rem 0.55rem;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+    .k-num-input {
+      width: 54px;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      padding: 0.15rem 0.3rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text-main);
+      background: #ffffff;
+      text-align: center;
+      outline: none;
+    }
+    .k-num-input:focus {
+      border-color: var(--accent-blue);
+    }
+    .reset-btn {
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      padding: 0.35rem 0.7rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .reset-btn:hover {
+      background: #e2e8f0;
+      color: var(--text-main);
+    }
+    .sort-arrow {
+      font-size: 0.75rem;
+      margin-left: 0.25rem;
+      color: var(--accent-blue);
     }
 
     .select-dropdown {
@@ -1219,19 +1314,34 @@ function generate_catalog_html(catalog_entries, title)
       <div class="search-row">
         <div class="search-input-wrapper">
           <span class="search-icon">🔍</span>
-          <input type="text" id="searchInput" class="search-input" placeholder="Search by PeakName (e.g. ctcf_1), Category (e.g. AccessibleTSS), Gene, or Coordinates...">
+          <input type="text" id="searchInput" class="search-input" placeholder="Include: PeakName, Category, Gene, or Coords (tip: prefix with - or ! to exclude)...">
         </div>
-        <div>
+        <div class="search-input-wrapper" style="max-width: 340px;">
+          <span class="search-icon">🚫</span>
+          <input type="text" id="excludeInput" class="search-input" placeholder="Exclude terms (e.g. ctcf, chrY)...">
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
           <select id="sortSelect" class="select-dropdown">
             <option value="reads_desc">Sort: Read Depth (High → Low)</option>
             <option value="reads_asc">Sort: Read Depth (Low → High)</option>
             <option value="k_desc">Sort: Optimal k* (High → Low)</option>
-            <option value="tss_asc">Sort: Nearest TSS Distance</option>
-            <option value="open_desc">Sort: % Open Molecules</option>
-            <option value="coords">Sort: Genomic Position</option>
-            <option value="peak_name">Sort: Peak Name</option>
-            <option value="category">Sort: Peak Category</option>
+            <option value="k_asc">Sort: Optimal k* (Low → High)</option>
+            <option value="cpg_desc">Sort: Diff 5mC Sites (High → Low)</option>
+            <option value="cpg_asc">Sort: Diff 5mC Sites (Low → High)</option>
+            <option value="tss_asc">Sort: Nearest TSS (Closest → Farthest)</option>
+            <option value="tss_desc">Sort: Nearest TSS (Farthest → Closest)</option>
+            <option value="open_desc">Sort: % Open Molecules (High → Low)</option>
+            <option value="open_asc">Sort: % Open Molecules (Low → High)</option>
+            <option value="nrl_asc">Sort: NRL bp (Low → High)</option>
+            <option value="nrl_desc">Sort: NRL bp (High → Low)</option>
+            <option value="coords_asc">Sort: Genomic Position (A → Z)</option>
+            <option value="coords_desc">Sort: Genomic Position (Z → A)</option>
+            <option value="peak_name_asc">Sort: Peak Name (A → Z)</option>
+            <option value="peak_name_desc">Sort: Peak Name (Z → A)</option>
+            <option value="category_asc">Sort: Peak Category (A → Z)</option>
+            <option value="category_desc">Sort: Peak Category (Z → A)</option>
           </select>
+          <button class="reset-btn" id="resetFiltersBtn" title="Reset all filters and sorting to defaults">Reset</button>
         </div>
       </div>
 
@@ -1256,25 +1366,25 @@ function generate_catalog_html(catalog_entries, title)
           </div>
         </div>
 
-        <!-- Heterogeneity State -->
+        <!-- Optimal k* Range Filter -->
         <div class="filter-section">
-          <span class="filter-title">Clustering State:</span>
-          <div class="pill-group" id="kPills">
-            <button class="pill-btn active" data-k="all">All k</button>
-            <button class="pill-btn" data-k="single">Single (k=1)</button>
-            <button class="pill-btn" data-k="multi">Heterogeneous (k≥2)</button>
-            <button class="pill-btn" data-k="complex">Complex (k≥3)</button>
+          <span class="filter-title">Optimal k*:</span>
+          <div class="k-range-box">
+            <span>Min</span>
+            <input type="number" id="kMinInput" class="k-num-input" min="1" max="100" value="1">
+            <span>to Max</span>
+            <input type="number" id="kMaxInput" class="k-num-input" min="1" max="100" value="100">
           </div>
         </div>
 
-        <!-- Signal Toggles -->
+        <!-- Tri-State Signal Toggles (Click: Require (+) -> Exclude (-) -> Any) -->
         <div class="filter-section">
-          <span class="filter-title">Signals:</span>
-          <button class="chip-toggle" id="toggleOpen">🔥 Open State</button>
-          <button class="chip-toggle" id="toggleHap">🧬 Allelic Skew</button>
-          <button class="chip-toggle" id="toggleStrand">⮂ Strand Skew</button>
-          <button class="chip-toggle" id="toggleSample">🧪 Sample Skew</button>
-          <button class="chip-toggle" id="toggleCpG">● Diff 5mC</button>
+          <span class="filter-title" title="Click once to require (+), click again to exclude (-), click a third time to reset">Signals (+/-):</span>
+          <button class="chip-toggle" id="toggleOpen" data-label="🔥 Open State" title="Click: Require Open State (+) → Exclude Open State (−) → Any">🔥 Open State</button>
+          <button class="chip-toggle" id="toggleHap" data-label="🧬 Allelic Skew" title="Click: Require Allelic Skew (+) → Exclude Allelic Skew (−) → Any">🧬 Allelic Skew</button>
+          <button class="chip-toggle" id="toggleStrand" data-label="⮂ Strand Skew" title="Click: Require Strand Skew (+) → Exclude Strand Skew (−) → Any">⮂ Strand Skew</button>
+          <button class="chip-toggle" id="toggleSample" data-label="🧪 Sample Skew" title="Click: Require Sample Skew (+) → Exclude Sample Skew (−) → Any">🧪 Sample Skew</button>
+          <button class="chip-toggle" id="toggleCpG" data-label="● Diff 5mC" title="Click: Require Diff 5mC (+) → Exclude Diff 5mC (−) → Any">● Diff 5mC</button>
         </div>
       </div>
     </section>
@@ -1301,15 +1411,16 @@ function generate_catalog_html(catalog_entries, title)
         <table class="catalog-table" id="regionsTable">
           <thead>
             <tr>
-              <th data-col="coords">Genomic Locus</th>
-              <th data-col="peak_name">Peak Name</th>
-              <th data-col="category">Category</th>
-              <th data-col="gene">Nearest Gene</th>
-              <th data-col="context">Context</th>
-              <th data-col="reads">Read Depth</th>
-              <th data-col="k">Optimal k*</th>
-              <th data-col="open">Openness</th>
-              <th data-col="nrl">NRL (bp)</th>
+              <th data-col="coords">Genomic Locus <span class="sort-arrow" id="arrow-coords"></span></th>
+              <th data-col="peak_name">Peak Name <span class="sort-arrow" id="arrow-peak_name"></span></th>
+              <th data-col="category">Category <span class="sort-arrow" id="arrow-category"></span></th>
+              <th data-col="gene">Nearest Gene <span class="sort-arrow" id="arrow-gene"></span></th>
+              <th data-col="context">Context <span class="sort-arrow" id="arrow-context"></span></th>
+              <th data-col="reads">Read Depth <span class="sort-arrow" id="arrow-reads"></span></th>
+              <th data-col="k">Optimal k* <span class="sort-arrow" id="arrow-k"></span></th>
+              <th data-col="open">Openness <span class="sort-arrow" id="arrow-open"></span></th>
+              <th data-col="nrl">NRL (bp) <span class="sort-arrow" id="arrow-nrl"></span></th>
+              <th data-col="cpg">Diff 5mC <span class="sort-arrow" id="arrow-cpg"></span></th>
               <th>Biological Flags</th>
               <th style="text-align: right;">Report</th>
             </tr>
@@ -1348,22 +1459,61 @@ function generate_catalog_html(catalog_entries, title)
     // --- Application State ---
     const RAW_DATA = JSON.parse(document.getElementById('catalog-data').textContent);
     let maxReads = 1;
-    RAW_DATA.forEach(d => { if (d.total_reads > maxReads) maxReads = d.total_reads; });
+    let maxK = 1;
+    RAW_DATA.forEach(d => {
+      if (d.total_reads > maxReads) maxReads = d.total_reads;
+      if (d.optimal_k > maxK) maxK = d.optimal_k;
+    });
 
-    let state = {
-      searchQuery: '',
-      contextFilter: 'all',
-      categoryFilter: 'all',
-      kFilter: 'all',
-      toggleOpen: false,
-      toggleHap: false,
-      toggleStrand: false,
-      toggleSample: false,
-      toggleCpG: false,
-      sortBy: 'reads_desc',
-      pageSize: 50,
-      currentPage: 1
-    };
+    const STORAGE_KEY = 'smgstats_catalog_state_' + window.location.pathname;
+
+    function getDefaultState() {
+      return {
+        searchQuery: '',
+        excludeQuery: '',
+        contextFilter: 'all',
+        categoryFilter: 'all',
+        kMin: 1,
+        kMax: maxK,
+        toggleOpen: 0,   // 0 = any, 1 = require (+), -1 = exclude (-)
+        toggleHap: 0,
+        toggleStrand: 0,
+        toggleSample: 0,
+        toggleCpG: 0,
+        sortBy: 'reads_desc',
+        pageSize: 50,
+        currentPage: 1,
+        scrollY: 0
+      };
+    }
+
+    let state = getDefaultState();
+
+    function saveState() {
+      try {
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (e) {}
+    }
+
+    function loadState() {
+      try {
+        const raw = sessionStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          state = Object.assign(getDefaultState(), parsed);
+          // Clamp kMax if dataset changed
+          if (typeof state.kMin !== 'number' || isNaN(state.kMin)) state.kMin = 1;
+          if (typeof state.kMax !== 'number' || isNaN(state.kMax) || state.kMax > maxK) state.kMax = maxK;
+          // Migrate legacy boolean toggles if present
+          ['toggleOpen', 'toggleHap', 'toggleStrand', 'toggleSample', 'toggleCpG'].forEach(k => {
+            if (state[k] === true) state[k] = 1;
+            else if (state[k] === false) state[k] = 0;
+          });
+        }
+      } catch (e) {
+        state = getDefaultState();
+      }
+    }
 
     // Populate Category Pills dynamically
     const categoryPills = document.getElementById('categoryPills');
@@ -1378,8 +1528,12 @@ function generate_catalog_html(catalog_entries, title)
 
     // --- DOM Elements ---
     const searchInput = document.getElementById('searchInput');
+    const excludeInput = document.getElementById('excludeInput');
+    const kMinInput = document.getElementById('kMinInput');
+    const kMaxInput = document.getElementById('kMaxInput');
     const sortSelect = document.getElementById('sortSelect');
     const pageSizeSelect = document.getElementById('pageSizeSelect');
+    const resetFiltersBtn = document.getElementById('resetFiltersBtn');
     const tableBody = document.getElementById('tableBody');
     const emptyState = document.getElementById('emptyState');
     const showingStart = document.getElementById('showingStart');
@@ -1388,19 +1542,135 @@ function generate_catalog_html(catalog_entries, title)
     const pageButtons = document.getElementById('pageButtons');
     const pageSummary = document.getElementById('pageSummary');
 
+    kMinInput.max = maxK;
+    kMaxInput.max = maxK;
+
+    const SIGNAL_TOGGLES = [
+      { id: 'toggleOpen',   prop: 'toggleOpen' },
+      { id: 'toggleHap',    prop: 'toggleHap' },
+      { id: 'toggleStrand', prop: 'toggleStrand' },
+      { id: 'toggleSample', prop: 'toggleSample' },
+      { id: 'toggleCpG',    prop: 'toggleCpG' }
+    ];
+
+    function updateChipVisual(btn, val) {
+      const baseLabel = btn.dataset.label || btn.textContent;
+      btn.classList.remove('require', 'exclude', 'active');
+      if (val === 1) {
+        btn.classList.add('require');
+        btn.textContent = '+ ' + baseLabel;
+      } else if (val === -1) {
+        btn.classList.add('exclude');
+        btn.textContent = '− ' + baseLabel;
+      } else {
+        btn.textContent = baseLabel;
+      }
+    }
+
+    // Map sortBy values to column header IDs and direction
+    const SORT_TO_COL = {
+      coords_asc:     { col: 'coords',    dir: '▲' },
+      coords_desc:    { col: 'coords',    dir: '▼' },
+      peak_name_asc:  { col: 'peak_name', dir: '▲' },
+      peak_name_desc: { col: 'peak_name', dir: '▼' },
+      category_asc:   { col: 'category',  dir: '▲' },
+      category_desc:  { col: 'category',  dir: '▼' },
+      tss_asc:        { col: 'gene',      dir: '▲' },
+      tss_desc:       { col: 'gene',      dir: '▼' },
+      reads_desc:     { col: 'reads',     dir: '▼' },
+      reads_asc:      { col: 'reads',     dir: '▲' },
+      k_desc:         { col: 'k',         dir: '▼' },
+      k_asc:          { col: 'k',         dir: '▲' },
+      open_desc:      { col: 'open',      dir: '▼' },
+      open_asc:       { col: 'open',      dir: '▲' },
+      nrl_asc:        { col: 'nrl',       dir: '▲' },
+      nrl_desc:       { col: 'nrl',       dir: '▼' },
+      cpg_desc:       { col: 'cpg',       dir: '▼' },
+      cpg_asc:        { col: 'cpg',       dir: '▲' }
+    };
+
+    function updateSortHeaderVisuals() {
+      document.querySelectorAll('#regionsTable th[data-col]').forEach(th => {
+        th.classList.remove('sorted');
+        const arrow = th.querySelector('.sort-arrow');
+        if (arrow) arrow.textContent = '';
+      });
+      const info = SORT_TO_COL[state.sortBy];
+      if (info) {
+        const th = document.querySelector(`#regionsTable th[data-col="\${info.col}"]`);
+        if (th) {
+          th.classList.add('sorted');
+          const arrow = th.querySelector('.sort-arrow');
+          if (arrow) arrow.textContent = info.dir;
+        }
+      }
+      if ([...sortSelect.options].some(o => o.value === state.sortBy)) {
+        sortSelect.value = state.sortBy;
+      }
+    }
+
+    function syncControlsFromState() {
+      searchInput.value = state.searchQuery || '';
+      excludeInput.value = state.excludeQuery || '';
+      kMinInput.value = state.kMin;
+      kMaxInput.value = state.kMax;
+      pageSizeSelect.value = String(state.pageSize);
+
+      document.querySelectorAll('#contextPills .pill-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.context === state.contextFilter);
+      });
+      document.querySelectorAll('#categoryPills .pill-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.category === state.categoryFilter);
+      });
+      SIGNAL_TOGGLES.forEach(({ id, prop }) => {
+        const btn = document.getElementById(id);
+        if (btn) updateChipVisual(btn, state[prop] || 0);
+      });
+      updateSortHeaderVisuals();
+    }
+
+    function rowMatchesTerm(row, term) {
+      const locusStr = `\${row.chrom}:\${row.peak_start}-\${row.peak_stop}`.toLowerCase();
+      return (row.nearest_gene && row.nearest_gene.toLowerCase().includes(term)) ||
+             (row.nearest_gene_id && row.nearest_gene_id.toLowerCase().includes(term)) ||
+             (row.region_id && row.region_id.toLowerCase().includes(term)) ||
+             (row.chrom && row.chrom.toLowerCase().includes(term)) ||
+             (row.peak_name && row.peak_name.toLowerCase().includes(term)) ||
+             (row.category && row.category.toLowerCase().includes(term)) ||
+             locusStr.includes(term);
+    }
+
     // --- Filter & Sort Logic ---
     function filterAndSortData() {
+      // Parse include and exclude terms
+      const incTerms = [];
+      const excTerms = [];
+      if (state.searchQuery) {
+        const tokens = state.searchQuery.toLowerCase().split(/[\\s,]+/).filter(Boolean);
+        for (const tok of tokens) {
+          if ((tok.startsWith('-') || tok.startsWith('!')) && tok.length > 1) {
+            excTerms.push(tok.slice(1));
+          } else {
+            incTerms.push(tok);
+          }
+        }
+      }
+      if (state.excludeQuery) {
+        const tokens = state.excludeQuery.toLowerCase().split(/[\\s,]+/).filter(Boolean);
+        for (const tok of tokens) {
+          const clean = (tok.startsWith('-') || tok.startsWith('!')) && tok.length > 1 ? tok.slice(1) : tok;
+          if (clean) excTerms.push(clean);
+        }
+      }
+
       let filtered = RAW_DATA.filter(row => {
-        // Search text
-        if (state.searchQuery) {
-          const q = state.searchQuery.toLowerCase();
-          const matchGene = row.nearest_gene && row.nearest_gene.toLowerCase().includes(q);
-          const matchGeneId = row.nearest_gene_id && row.nearest_gene_id.toLowerCase().includes(q);
-          const matchId = row.region_id && row.region_id.toLowerCase().includes(q);
-          const matchChr = row.chrom && row.chrom.toLowerCase().includes(q);
-          const matchPeak = row.peak_name && row.peak_name.toLowerCase().includes(q);
-          const matchCat = row.category && row.category.toLowerCase().includes(q);
-          if (!matchGene && !matchGeneId && !matchId && !matchChr && !matchPeak && !matchCat) return false;
+        // Positive search terms (all must match)
+        for (const term of incTerms) {
+          if (!rowMatchesTerm(row, term)) return false;
+        }
+        // Negative search terms (any match excludes row)
+        for (const term of excTerms) {
+          if (rowMatchesTerm(row, term)) return false;
         }
 
         // Category
@@ -1413,33 +1683,53 @@ function generate_catalog_html(catalog_entries, title)
           if (state.contextFilter === 'Intergenic' && !row.context.includes('Intergenic')) return false;
         }
 
-        // K state
-        if (state.kFilter === 'single' && row.optimal_k !== 1) return false;
-        if (state.kFilter === 'multi' && row.optimal_k < 2) return false;
-        if (state.kFilter === 'complex' && row.optimal_k < 3) return false;
+        // Optimal k* range
+        if (row.optimal_k < state.kMin || row.optimal_k > state.kMax) return false;
 
-        // Toggles
-        if (state.toggleOpen && !row.has_open_cluster) return false;
-        if (state.toggleHap && !row.has_hap_skew) return false;
-        if (state.toggleStrand && !row.has_strand_skew) return false;
-        if (state.toggleSample && !row.has_sample_skew) return false;
-        if (state.toggleCpG && row.sig_cpg_count === 0) return false;
+        // Tri-state signal toggles: 1 = require (+), -1 = exclude (-), 0 = any
+        if (state.toggleOpen === 1 && !row.has_open_cluster) return false;
+        if (state.toggleOpen === -1 && row.has_open_cluster) return false;
+
+        if (state.toggleHap === 1 && !row.has_hap_skew) return false;
+        if (state.toggleHap === -1 && row.has_hap_skew) return false;
+
+        if (state.toggleStrand === 1 && !row.has_strand_skew) return false;
+        if (state.toggleStrand === -1 && row.has_strand_skew) return false;
+
+        if (state.toggleSample === 1 && !row.has_sample_skew) return false;
+        if (state.toggleSample === -1 && row.has_sample_skew) return false;
+
+        const hasCpG = row.sig_cpg_count > 0;
+        if (state.toggleCpG === 1 && !hasCpG) return false;
+        if (state.toggleCpG === -1 && hasCpG) return false;
 
         return true;
       });
 
-      // Sort
+      // Bidirectional Sort
       filtered.sort((a, b) => {
         switch (state.sortBy) {
           case 'reads_desc': return b.total_reads - a.total_reads;
           case 'reads_asc':  return a.total_reads - b.total_reads;
-          case 'k_desc':     return b.optimal_k - a.optimal_k || b.total_reads - a.total_reads;
+          case 'k_desc':     return (b.optimal_k - a.optimal_k) || (b.total_reads - a.total_reads);
+          case 'k_asc':      return (a.optimal_k - b.optimal_k) || (b.total_reads - a.total_reads);
+          case 'cpg_desc':   return (b.sig_cpg_count - a.sig_cpg_count) || (b.total_reads - a.total_reads);
+          case 'cpg_asc':    return (a.sig_cpg_count - b.sig_cpg_count) || (b.total_reads - a.total_reads);
           case 'tss_asc':    return Math.abs(a.tss_distance) - Math.abs(b.tss_distance);
-          case 'open_desc':  return b.prop_open - a.prop_open;
-          case 'nrl_asc':    return (a.min_nrl ?? 9999) - (b.min_nrl ?? 9999);
-          case 'coords':     return a.chrom.localeCompare(b.chrom, undefined, {numeric: true}) || a.peak_start - b.peak_start;
+          case 'tss_desc':   return Math.abs(b.tss_distance) - Math.abs(a.tss_distance);
+          case 'open_desc':  return (b.prop_open - a.prop_open) || (b.total_reads - a.total_reads);
+          case 'open_asc':   return (a.prop_open - b.prop_open) || (b.total_reads - a.total_reads);
+          case 'nrl_asc':    return (a.min_nrl ?? 99999) - (b.min_nrl ?? 99999);
+          case 'nrl_desc':   return (b.min_nrl ?? -1) - (a.min_nrl ?? -1);
+          case 'coords_asc':
+          case 'coords':     return a.chrom.localeCompare(b.chrom, undefined, {numeric: true}) || (a.peak_start - b.peak_start);
+          case 'coords_desc':return b.chrom.localeCompare(a.chrom, undefined, {numeric: true}) || (b.peak_start - a.peak_start);
+          case 'peak_name_asc':
           case 'peak_name':  return (a.peak_name || '').localeCompare(b.peak_name || '', undefined, {numeric: true});
-          case 'category':   return (a.category || '').localeCompare(b.category || '') || b.total_reads - a.total_reads;
+          case 'peak_name_desc': return (b.peak_name || '').localeCompare(a.peak_name || '', undefined, {numeric: true});
+          case 'category_asc':
+          case 'category':   return (a.category || '').localeCompare(b.category || '') || (b.total_reads - a.total_reads);
+          case 'category_desc': return (b.category || '').localeCompare(a.category || '') || (b.total_reads - a.total_reads);
           default: return 0;
         }
       });
@@ -1447,8 +1737,15 @@ function generate_catalog_html(catalog_entries, title)
       return filtered;
     }
 
+    function navigateToReport(url) {
+      state.scrollY = window.scrollY;
+      saveState();
+      window.location.href = url;
+    }
+
     // --- Render View ---
     function render() {
+      updateSortHeaderVisuals();
       const filtered = filterAndSortData();
       const total = filtered.length;
 
@@ -1517,6 +1814,11 @@ function generate_catalog_html(catalog_entries, title)
           nrlStr = row.min_nrl === row.max_nrl ? `\${row.min_nrl}` : `\${row.min_nrl}–\${row.max_nrl}`;
         }
 
+        // Diff 5mC count cell
+        const cpgCell = row.sig_cpg_count > 0 ?
+          `<span class="tag-badge tag-cpg" style="font-family: var(--font-mono); font-size: 0.82rem;">\${row.sig_cpg_count}</span>` :
+          `<span style="font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-dim);">0</span>`;
+
         // Biological flags
         let tagsHtml = '';
         if (row.has_hap_skew) tagsHtml += `<span class="tag-badge tag-hap" title="Allelic / Haplotype Skew (p < 0.01)">Hap Skew</span>`;
@@ -1526,7 +1828,7 @@ function generate_catalog_html(catalog_entries, title)
         if (!tagsHtml) tagsHtml = `<span style="color: var(--text-dim); font-size: 0.75rem;">None</span>`;
 
         html += `
-          <tr onclick="window.location.href='\${row.report_url}'">
+          <tr onclick="navigateToReport('\${row.report_url}')">
             <td>
               <div class="locus-cell">
                 <span>\${locusStr}</span>
@@ -1558,11 +1860,12 @@ function generate_catalog_html(catalog_entries, title)
             <td>
               <span style="font-family: var(--font-mono); font-size: 0.85rem;">\${nrlStr}</span>
             </td>
+            <td>\${cpgCell}</td>
             <td>
               <div class="tag-list">\${tagsHtml}</div>
             </td>
             <td style="text-align: right;">
-              <a href="\${row.report_url}" class="action-btn" onclick="event.stopPropagation();">
+              <a href="\${row.report_url}" class="action-btn" onclick="event.stopPropagation(); state.scrollY = window.scrollY; saveState();">
                 Report &rarr;
               </a>
             </td>
@@ -1598,6 +1901,8 @@ function generate_catalog_html(catalog_entries, title)
 
     function changePage(p) {
       state.currentPage = p;
+      state.scrollY = 380;
+      saveState();
       render();
       window.scrollTo({ top: 380, behavior: 'smooth' });
     }
@@ -1606,17 +1911,51 @@ function generate_catalog_html(catalog_entries, title)
     searchInput.addEventListener('input', (e) => {
       state.searchQuery = e.target.value.trim();
       state.currentPage = 1;
+      saveState();
+      render();
+    });
+
+    excludeInput.addEventListener('input', (e) => {
+      state.excludeQuery = e.target.value.trim();
+      state.currentPage = 1;
+      saveState();
+      render();
+    });
+
+    kMinInput.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      state.kMin = isNaN(val) ? 1 : Math.max(1, val);
+      state.currentPage = 1;
+      saveState();
+      render();
+    });
+
+    kMaxInput.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      state.kMax = isNaN(val) ? maxK : Math.max(1, val);
+      state.currentPage = 1;
+      saveState();
       render();
     });
 
     sortSelect.addEventListener('change', (e) => {
       state.sortBy = e.target.value;
+      state.currentPage = 1;
+      saveState();
       render();
     });
 
     pageSizeSelect.addEventListener('change', (e) => {
       state.pageSize = parseInt(e.target.value, 10);
       state.currentPage = 1;
+      saveState();
+      render();
+    });
+
+    resetFiltersBtn.addEventListener('click', () => {
+      state = getDefaultState();
+      try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
+      syncControlsFromState();
       render();
     });
 
@@ -1627,6 +1966,7 @@ function generate_catalog_html(catalog_entries, title)
       e.target.classList.add('active');
       state.contextFilter = e.target.dataset.context;
       state.currentPage = 1;
+      saveState();
       render();
     });
 
@@ -1637,65 +1977,74 @@ function generate_catalog_html(catalog_entries, title)
       e.target.classList.add('active');
       state.categoryFilter = e.target.dataset.category;
       state.currentPage = 1;
+      saveState();
       render();
     });
 
-    // K State Pills
-    document.getElementById('kPills').addEventListener('click', (e) => {
-      if (!e.target.classList.contains('pill-btn')) return;
-      document.querySelectorAll('#kPills .pill-btn').forEach(b => b.classList.remove('active'));
-      e.target.classList.add('active');
-      state.kFilter = e.target.dataset.k;
-      state.currentPage = 1;
-      render();
-    });
-
-    // Toggle Chips
-    function setupToggle(id, prop) {
+    // Tri-State Signal Toggle Chips: 0 (Any) -> 1 (Require +) -> -1 (Exclude -) -> 0
+    SIGNAL_TOGGLES.forEach(({ id, prop }) => {
       const btn = document.getElementById(id);
+      if (!btn) return;
       btn.addEventListener('click', () => {
-        state[prop] = !state[prop];
-        btn.classList.toggle('active', state[prop]);
+        const cur = state[prop] || 0;
+        const next = cur === 0 ? 1 : (cur === 1 ? -1 : 0);
+        state[prop] = next;
+        updateChipVisual(btn, next);
         state.currentPage = 1;
+        saveState();
         render();
       });
-    }
-    setupToggle('toggleOpen', 'toggleOpen');
-    setupToggle('toggleHap', 'toggleHap');
-    setupToggle('toggleStrand', 'toggleStrand');
-    setupToggle('toggleSample', 'toggleSample');
-    setupToggle('toggleCpG', 'toggleCpG');
+    });
 
-    // Column Header Click Sorting
-    const colSortMap = {
-      coords: 'coords',
-      peak_name: 'peak_name',
-      category: 'category',
-      gene: 'tss_asc',
-      context: 'tss_asc',
-      reads: 'reads_desc',
-      k: 'k_desc',
-      open: 'open_desc',
-      nrl: 'nrl_asc'
+    // Bidirectional Column Header Click Sorting
+    const COL_SORT_PAIRS = {
+      coords:    ['coords_asc',    'coords_desc'],
+      peak_name: ['peak_name_asc', 'peak_name_desc'],
+      category:  ['category_asc',  'category_desc'],
+      gene:      ['tss_asc',       'tss_desc'],
+      context:   ['tss_asc',       'tss_desc'],
+      reads:     ['reads_desc',    'reads_asc'],
+      k:         ['k_desc',        'k_asc'],
+      open:      ['open_desc',     'open_asc'],
+      nrl:       ['nrl_asc',       'nrl_desc'],
+      cpg:       ['cpg_desc',      'cpg_asc']
     };
+
     document.querySelectorAll('#regionsTable th[data-col]').forEach(th => {
       th.addEventListener('click', () => {
         const col = th.dataset.col;
-        if (col === 'reads' && state.sortBy === 'reads_desc') {
-          state.sortBy = 'reads_asc';
-        } else if (colSortMap[col]) {
-          state.sortBy = colSortMap[col];
-        }
-        if ([...sortSelect.options].some(o => o.value === state.sortBy)) {
-          sortSelect.value = state.sortBy;
-        }
+        const pair = COL_SORT_PAIRS[col];
+        if (!pair) return;
+        state.sortBy = (state.sortBy === pair[0]) ? pair[1] : pair[0];
         state.currentPage = 1;
+        saveState();
         render();
       });
     });
 
-    // Initial render
-    render();
+    // Keep scroll position saved when leaving page
+    window.addEventListener('pagehide', () => {
+      state.scrollY = window.scrollY;
+      saveState();
+    });
+
+    // Restore state on initial load and back-forward cache restore
+    function initCatalogView() {
+      loadState();
+      syncControlsFromState();
+      render();
+      if (state.scrollY > 0) {
+        requestAnimationFrame(() => window.scrollTo(0, state.scrollY));
+      }
+    }
+
+    window.addEventListener('pageshow', (e) => {
+      if (e.persisted) {
+        initCatalogView();
+      }
+    });
+
+    initCatalogView();
   </script>
 </body>
 </html>
