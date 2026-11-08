@@ -623,7 +623,7 @@ function rebuild_catalog_html(outdir::AbstractString; title::AbstractString="SMG
     hap_skew_count = count(_ -> true, eachmatch(r"\"has_hap_skew\"\s*:\s*true\b", json_data))
 
     guide_path = joinpath(outdir, "guide.html")
-    render_cluster_guide_html(guide_path; catalog_path="index.html")
+    render_cluster_guide_html(guide_path; back_url="index.html", back_label="Back to Catalog Dashboard")
 
     index_path = joinpath(outdir, "index.html")
     html_str = _render_catalog_html_from_json(json_data, title, n_regions, multi_state_count, promoter_count, hap_skew_count)
