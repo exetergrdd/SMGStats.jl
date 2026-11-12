@@ -69,6 +69,7 @@ The CLI accepts both required positional/named parameters and optional algorithm
 | `files` | *(positional)* | Strings (space-separated) | **Required** | One or more indexed BAM or CRAM files containing single-molecule methylation and footprint calls (e.g., tags `MM`/`ML` for 6mA/5mC, or FIRE tags). |
 | `--peaks` | `-p` | File Path | **Required** | BED or TSV file defining genomic regions to cluster. Must contain at least `chrom`, `start`, and `stop` (0-based or 1-based, with or without header). Optional `PeakName` (e.g. `ctcf_1_fp_1`) and `Category` (e.g. `AccessibleTSS`, `FirePeak`) columns are automatically preserved and propagated to all output tables and `.jld2` payloads; if omitted, they default to `peak_1, peak_2, ...` and `ClusterPeak`. |
 | `--output` | `-o` | Directory Path | **Required** | Directory where output TSV tables and JLD2 files will be written. Directory is created automatically if it does not exist. |
+| `--samples` | `-s` | Comma-separated Strings | *Auto-inferred* | Optional custom sample labels for each input BAM/CRAM file (e.g. `endo_as1,endo_as2,endo_wgs` or `050526=endo_as1,200126=endo_as2`). When omitted, sample names are automatically extracted from standard ONT/Dorado directory hierarchies (`*/sample_id/sample_id_rep/run_ind/dorado*/...`) and guaranteed to be unique per BAM file. |
 | `--threads` | `-t` | Integer / `auto` | `auto` | Number of CPU worker threads used to cluster genomic regions in parallel. Set in the `smgstats` bash script. |
 
 ---
@@ -550,10 +551,12 @@ Once `smgstats cluster` has generated `.jld2` files, `smgstats report` builds a 
 
 | Argument | Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `--input` | `-i` | Path | **Required** | Input directory containing `.jld2` files, or a single `.jld2` file. |
+| `--input` | `-i` | Path | Optional (if rebuilding UI) | Input directory containing `.jld2` files, or a single `.jld2` file. If omitted when `<output>/catalog.json` already exists, rebuilds `index.html` and `guide.html` instantaneously. |
 | `--output` | `-o` | Directory Path | **Required** | Output directory for the master catalog dashboard (`index.html`) and `regions/` reports. |
 | `--exondata` | `-e` | File Path | `nothing` | Optional GTF (`.gtf.gz`) or Arrow file for gene model tracks, nearest-gene annotation, and TSS distance calculation. |
 | `--peaks` | `-p` | File Path | `nothing` | Optional target peaks BED/TSV file to supply or override `PeakName` and `Category` labels when reporting on older `.jld2` files. |
+| `--samples` | `-s` | Comma-separated Strings | *Auto-inferred* | Optional sample label overrides when reporting on `.jld2` files (e.g. `050526=endo_as1,200126=endo_as2,181225=endo_wgs` or `endo_as1,endo_as2,endo_wgs`). Even without `--samples`, `load_clustering` automatically recovers Dorado/ONT sample IDs from the full BAM paths stored in `clustering.reads`. |
+| `--refresh_samples` | | Flag | `false` | Fast partial update for existing region reports: regenerates **only** `assets/sample.svg` and `report.html` (skipping the other 10 figures per region) after sample label resolution or `--samples` overrides. |
 | `--longest_only` | | Boolean (`true`/`false`) | `true` | Plot only the longest transcript isoform per gene on the gene model track. |
 | `--workers` | `-w` | Integer | `1` | Number of parallel OS worker processes to spawn for rendering per-region CairoMakie figures and HTML reports. |
 | `--chunk` | | Integer | `1` | 1-based worker chunk index ($1 \le \text{chunk} \le \text{nchunks}$) when splitting report generation externally across cluster jobs. |

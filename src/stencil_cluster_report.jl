@@ -74,12 +74,12 @@ end
 Plots single-base modification calls (6mA, 5mC, 5hmC) as scatter points along read horizontal levels.
 """
 function modplot(chrom, loc, readdata, leveldata; mod=:mod_6mA, unmod=false, plotline=false, 
-                 unmodinfire=true, color=nothing, hap=nothing, sample=nothing, showline=true, 
+                 unmodinfire=true, color=nothing, hap=nothing, sample=nothing, sample_labels=nothing, showline=true, 
                  validpos=(Set{Int}(), Set{Int}()), strand=nothing, 
                  f=Figure(), axv=1, axh=1, 
                  ax=Axis(f[axv, axh], xgridvisible=false, ygridvisible=false, xticks=([], [])), 
                  ymax=isempty(leveldata) ? 1 : maximum(leveldata), markersize=4, markeralpha=1.0, depthfilter=5, unify_gc_strand=true,
-                 labelfun=x -> replace(basename(x), r".bam|.cram|.haplotagged" => ""))
+                 labelfun=nothing)
 
     ind = trues(length(readdata))
     if !isnothing(hap)
@@ -89,7 +89,12 @@ function modplot(chrom, loc, readdata, leveldata; mod=:mod_6mA, unmod=false, plo
         ind .&= [r.strand == strand for r in readdata]
     end
     if !isnothing(sample)
-        ind .&= [labelfun(r.label) == sample for r in readdata]
+        resolved_samples = if !isnothing(sample_labels) && length(sample_labels) == length(readdata)
+            sample_labels
+        else
+            resolve_read_samples(readdata; labelfun=labelfun)
+        end
+        ind .&= [s == sample for s in resolved_samples]
     end
     reads = @view readdata[ind]
     levels = @view leveldata[ind]
@@ -618,8 +623,8 @@ function sample_diagnostics(clustering)
     cldf = DataFrame(vec([(cluster=k, sample=s, fisher(clustering.readtable.cluster .== k, clustering.readtable.sample .== s)...) for k in 1:opt_k, s in samples]))
     ax = Axis(f[1, 1], xgridvisible=false, ygridvisible=false, yticks=1:opt_k, xlabel="log(Odds Ratio) [Sample vs Other]", ylabel="Cluster")
     
-    palette = [:steelblue, :crimson, :darkorange, :forestgreen, :purple, :teal, :magenta]
-    sample_palette = palette[1:min(length(palette), n_samples)]
+    palette = [:steelblue, :crimson, :darkorange, :forestgreen, :purple, :teal, :magenta, :goldenrod, :dodgerblue, :firebrick]
+    sample_palette = [palette[mod1(i, length(palette))] for i in 1:n_samples]
     sample_dict = Dict(s => i for (i, s) in enumerate(samples))
     
     plt = data(cldf) * 
@@ -632,7 +637,7 @@ function sample_diagnostics(clustering)
     ax_mod = Axis(f[1, 3], xgridvisible=false, ygridvisible=false, title="6mA Single-Molecule Reads by Sample")
     for (i, s) in enumerate(samples)
         c = sample_palette[mod1(i, length(sample_palette))]
-        modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, strand=nothing, sample=s, color=c)
+        modplot(clustering.chrom, clustering.loc, clustering.reads, levels; mod=:mod_6mA, f=f, ax=ax_mod, unmod=false, strand=nothing, sample=s, sample_labels=clustering.readtable.sample, color=c)
     end
     clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
     

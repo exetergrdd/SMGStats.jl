@@ -120,13 +120,83 @@ end
 
 
 """
-    update_clustering_nrl!(clustering; phase_threshold::Float64=0.035, nrl_feature::Symbol=:fire)
+    update_clustering_samples!(clustering; samples=nothing)
+
+Re-evaluates sample labels in `clustering.readtable.sample` from `clustering.reads` using
+`resolve_read_samples(clustering.reads; samples=samples)` (recovering Dorado/ONT sample IDs
+when `readtable.sample` previously collapsed to a shared BAM basename like `"basecall..."`),
+and updates `counts_sample`, `sample_or`, `sample_logor_se`, `sample_pvalue`, and `sample_min_pvalue`
+in `clustering.clustertable`.
+"""
+function update_clustering_samples!(clustering; samples=nothing)
+    if haskey(clustering, :reads) && haskey(clustering, :readtable) && !isnothing(clustering.readtable) && !isempty(clustering.reads)
+        rt = clustering.readtable
+        resolved = resolve_read_samples(clustering.reads; samples=samples)
+        if length(resolved) == nrow(rt) && (!hasproperty(rt, :sample) || rt.sample != resolved)
+            rt.sample = resolved
+            if haskey(clustering, :clustertable) && !isnothing(clustering.clustertable)
+                ct = clustering.clustertable
+                !issorted(ct.cluster) && sort!(ct, :cluster)
+                cids = ct.cluster
+                k = length(cids)
+                ct.counts_sample = [countstring(view(rt.sample, rt.cluster .== c)) for c in cids]
+
+                sample_or = ones(Float64, k)
+                sample_logor_se = fill(NaN, k)
+                sample_pvalue = ones(Float64, k)
+                sample_min_pvalue = ones(Float64, k)
+
+                uniq_samples = unique(rt.sample)
+                if k > 1 && length(uniq_samples) == 2
+                    is_s1 = rt.sample .== uniq_samples[1]
+                    for (idx, c) in enumerate(cids)
+                        ft_samp = fisher(rt.cluster .== c, is_s1)
+                        sample_or[idx] = ft_samp.or
+                        sample_logor_se[idx] = ft_samp.logor_se
+                        sample_pvalue[idx] = ft_samp.fisher_bpv
+                        sample_min_pvalue[idx] = ft_samp.fisher_bpv
+                    end
+                elseif k > 1 && length(uniq_samples) > 2
+                    for (idx, c) in enumerate(cids)
+                        best_pv = 1.0
+                        best_or = NaN
+                        best_se = NaN
+                        is_c = rt.cluster .== c
+                        for s in uniq_samples
+                            ft_samp = fisher(is_c, rt.sample .== s)
+                            if !isnan(ft_samp.fisher_bpv) && ft_samp.fisher_bpv <= best_pv
+                                best_pv = ft_samp.fisher_bpv
+                                best_or = ft_samp.or
+                                best_se = ft_samp.logor_se
+                            end
+                        end
+                        sample_or[idx] = best_or
+                        sample_logor_se[idx] = best_se
+                        sample_pvalue[idx] = best_pv
+                        sample_min_pvalue[idx] = best_pv
+                    end
+                end
+
+                ct.sample_or = sample_or
+                ct.sample_logor_se = sample_logor_se
+                ct.sample_pvalue = sample_pvalue
+                ct.sample_min_pvalue = sample_min_pvalue
+            end
+        end
+    end
+    return clustering
+end
+
+"""
+    update_clustering_nrl!(clustering; phase_threshold::Float64=0.035, nrl_feature::Symbol=:fire, samples=nothing)
 
 Ensures that `clustering.clustertable` has accurate, dynamically re-evaluated spectral NRLs
-using relative autocorrelation lags (starting at 0) and the specified phasing threshold.
+using relative autocorrelation lags (starting at 0) and the specified phasing threshold,
+and repairs sample labels if needed via `update_clustering_samples!`.
 Mutates `clustering.clustertable` in place and returns `clustering`.
 """
-function update_clustering_nrl!(clustering; phase_threshold::Float64=0.035, nrl_feature::Symbol=:fire)
+function update_clustering_nrl!(clustering; phase_threshold::Float64=0.035, nrl_feature::Symbol=:fire, samples=nothing)
+    update_clustering_samples!(clustering; samples=samples)
     if haskey(clustering, :clustertable) && haskey(clustering, :CM) && haskey(clustering, :optimal_clustering)
         try
             ct = clustering.clustertable
@@ -184,7 +254,7 @@ Safely loads a clustering NamedTuple from a `.jld2` file, automatically resolvin
 either the `"clustering"` key, `"single_stored_object"`, or the primary root group,
 and updates spectral NRL properties using relative autocorrelation lags.
 """
-function load_clustering(fpath::AbstractString; phase_threshold::Float64=0.035)
+function load_clustering(fpath::AbstractString; phase_threshold::Float64=0.035, samples=nothing)
     obj = jldopen(fpath, "r") do file
         k = keys(file)
         if "clustering" in k
@@ -197,7 +267,7 @@ function load_clustering(fpath::AbstractString; phase_threshold::Float64=0.035)
             error("Empty JLD2 file: $fpath")
         end
     end
-    update_clustering_nrl!(obj; phase_threshold=phase_threshold)
+    update_clustering_nrl!(obj; phase_threshold=phase_threshold, samples=samples)
     return obj
 end
 
@@ -407,7 +477,9 @@ function _spawn_report_workers(
     phase_threshold::Float64,
     skip_existing::Bool,
     limit,
-    workers::Int
+    workers::Int;
+    samples=nothing,
+    refresh_samples::Bool=false
 )
     julia_cmd = Base.julia_cmd()
     proj_dir = dirname(@__DIR__)
@@ -433,6 +505,8 @@ function _spawn_report_workers(
             build_index = false,
             skip_existing = $(repr(skip_existing)),
             limit = $(repr(limit)),
+            samples = $(repr(samples)),
+            refresh_samples = $(repr(refresh_samples)),
             chunk = $w,
             nchunks = $workers,
             workers = 1
@@ -471,6 +545,8 @@ function build_cluster_catalog(inputs, outdir;
     build_index=true,
     skip_existing=true, 
     limit=nothing,
+    samples=nothing,
+    refresh_samples::Bool=false,
     workers::Int=1,
     chunk::Int=1,
     nchunks::Int=1,
@@ -528,7 +604,7 @@ function build_cluster_catalog(inputs, outdir;
         Threads.@threads for idx in 1:n_total
             fpath = files[idx]
             try
-                clustering = load_clustering(fpath; phase_threshold=phase_threshold)
+                clustering = load_clustering(fpath; phase_threshold=phase_threshold, samples=samples)
                 reorder_clusters!(clustering)
                 raw_entries[idx] = extract_locus_summary(
                     clustering;
@@ -564,7 +640,9 @@ function build_cluster_catalog(inputs, outdir;
             _spawn_report_workers(
                 inputs, outdir, exondata, peakfile,
                 longest_only, gene_flank, phase_threshold,
-                skip_existing, limit, min(workers, n_total)
+                skip_existing, limit, min(workers, n_total);
+                samples=samples,
+                refresh_samples=refresh_samples
             )
         else
             indices = chunk:nchunks:n_total
@@ -575,9 +653,9 @@ function build_cluster_catalog(inputs, outdir;
                 slug = file_slugs[idx]
                 region_dir = joinpath(outdir, "regions", slug)
                 report_html_path = joinpath(region_dir, "report.html")
-                if !(skip_existing && isfile(report_html_path))
+                if refresh_samples || !(skip_existing && isfile(report_html_path))
                     try
-                        clustering = load_clustering(fpath; phase_threshold=phase_threshold)
+                        clustering = load_clustering(fpath; phase_threshold=phase_threshold, samples=samples)
                         reorder_clusters!(clustering)
                         pname, pcat = _resolve_peak_meta(clustering; idx=idx, peak_lookup=peak_lookup)
                         render_cluster_report(clustering, region_dir; 
@@ -589,7 +667,9 @@ function build_cluster_catalog(inputs, outdir;
                             category=pcat,
                             catalog_path="../../index.html",
                             guide_path="../../guide.html",
-                            update_nrl=false
+                            update_nrl=false,
+                            samples=samples,
+                            only_sample=refresh_samples
                         )
                     catch err
                         smglog("Warning: Failed rendering report for $fpath: $err")

@@ -1020,7 +1020,7 @@ Builds a DataFrame summarizing statistics per read (molecule) over the specified
 Includes metrics such as read length, modification rates, feature densities, and 
 spectral nucleosome repeat lengths (NRLs).
 """
-function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire, unifystrand=true, peakname::AbstractString="peak_1", category::AbstractString="ClusterPeak", labelfun = x -> replace(basename(x), r".bam|.cram|.haplotagged" => ""))
+function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire, unifystrand=true, peakname::AbstractString="peak_1", category::AbstractString="ClusterPeak", labelfun = nothing, samples = nothing)
     n = length(reads)
     cluster = clusterresult.optimal_model.assignments
     cost   = clusterresult.optimal_model.costs
@@ -1030,7 +1030,7 @@ function readtable(chrom, loc, reads, clusterresult, featmat; nrl_feature=:fire,
     chrom = [chrom for r in reads]
     PeakName = fill(String(peakname), n)
     Category = fill(String(category), n)
-    sample = [labelfun(r.label) for r in reads]
+    sample = resolve_read_samples(reads; samples=samples, labelfun=labelfun)
     start = [max(r.lp, first(loc)) for r in reads]
     stop  = [min(r.rp, last(loc)) for r in reads]
     hap   = [r.haplotype for r in reads]
@@ -1363,12 +1363,18 @@ for the clustering workflow. Computes clustering for each region and writes resu
 It executes in parallel across regions if Julia is started with multiple threads.
 """
 function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6mA), dx=15, smooth_sigma=0.0, strictfirefeatures=1, unify_gc_strand=true, ks=[1:20 ; 22:2:60], max_k_fraction=0.65, n_ils_restarts=2, n_restarts=20, random_seed_offset = 0,
-                epochs=1000, rejection_neighbourhood_fraction=0.08, max_rejections=150, maxiter=300, linkage=:single, logiter=false, label="")
+                epochs=1000, rejection_neighbourhood_fraction=0.08, max_rejections=150, maxiter=300, linkage=:single, logiter=false, label="", samples=nothing)
 
+    bams_vec = bams isa AbstractString ? [String(bams)] : String.(bams)
+    sample_labels = infer_sample_labels(bams_vec; samples=samples)
 
     smglog("Stencil Clustering  : ")
     smglog("Peakfile            : ", peakfile)
-    smglog("BAMs                : ", join(bams, ", "))
+    smglog("BAMs                : ", join(bams_vec, ", "))
+    smglog("Samples             : ")
+    for (idx, (b, slbl)) in enumerate(zip(bams_vec, sample_labels))
+        smglog("  [", idx, "] ", slbl, " <= ", b)
+    end
     smglog("Outdir              : ", outdir)
     smglog("Threads             : ", Threads.nthreads())
     smglog("Parameters          : ")
@@ -1410,10 +1416,10 @@ function cluster_peaks(peakfile, bams, outdir;  dw=600, features=(:fire, :mod_6m
         smglog("Clustering              : ", chrom, ":", first(peakloc), "-", last(peakloc), " (", peakname, " [", category, "])") ### smglog is thread safe
 
         rng = Xoshiro()
-        clustering = cluster_region(chrom, peakloc, bams; dw=dw, features=features, dx=dx, smooth_sigma=smooth_sigma, strictfirefeatures=strictfirefeatures, unify_gc_strand=unify_gc_strand, ks=ks,
+        clustering = cluster_region(chrom, peakloc, bams_vec; dw=dw, features=features, dx=dx, smooth_sigma=smooth_sigma, strictfirefeatures=strictfirefeatures, unify_gc_strand=unify_gc_strand, ks=ks,
                  max_k_fraction=max_k_fraction, n_ils_restarts=n_ils_restarts, n_restarts=n_restarts, random_seed_offset = random_seed_offset,
                 epochs=epochs, rejection_neighbourhood_fraction=rejection_neighbourhood_fraction, max_rejections=max_rejections, maxiter=maxiter, 
-                linkage=linkage, rng=rng, logiter=logiter, peakname=peakname, category=category)
+                linkage=linkage, rng=rng, logiter=logiter, peakname=peakname, category=category, samples=sample_labels)
 
         !isnothing(clustering) && saveclustering(outdir, clustering, label)
     end
@@ -1462,8 +1468,16 @@ clustertable, modclustertable) to compressed TSV files.
 function saveclustering(outdir, clustering, label)
     isnothing(clustering) && return nothing
 
+    auto_label = if !isempty(label)
+        label
+    else
+        uniq_s = sort(unique(clustering.readtable.sample))
+        joined = join(uniq_s, ".")
+        length(joined) > 80 ? string(first(joined, 70), "_$(length(uniq_s))samples") : joined
+    end
+
     regionlabel = string("smgstats_cluster_", 
-        isempty(label) ? join(sort(unique(clustering.readtable.sample)), ".") : label, "_",
+        auto_label, "_",
         clustering.chrom, "_",
         first(clustering.peakloc), "_",
         last(clustering.peakloc), "_",
@@ -1506,11 +1520,13 @@ function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA)
                max_rejections=150, maxiter=300, linkage=:single, rng=Xoshiro(), logiter=false,
                 epochs=1000, rejection_neighbourhood_fraction=0.08,
                 order_feature::Symbol=:mod_6mA, order_bin_dx::Int=10, order_std::Real=1.0, active_first::Bool=true,
-                peakname::AbstractString="peak_1", category::AbstractString="ClusterPeak")
+                peakname::AbstractString="peak_1", category::AbstractString="ClusterPeak", samples=nothing)
 
     loc = (first(peakloc) - dw):(last(peakloc) + dw)
 
-    reads = collectstencilreads(bams, chrom, loc, strictfirefeatures=strictfirefeatures)
+    bams_vec = bams isa AbstractString ? [String(bams)] : String.(bams)
+    sample_labels = infer_sample_labels(bams_vec; samples=samples)
+    reads = collectstencilreads(bams_vec, chrom, loc; strictfirefeatures=strictfirefeatures, labels=sample_labels)
     if isempty(reads)
         smglog("Warning: No spanning reads found for ", chrom, ":", first(peakloc), "-", last(peakloc), " (window ", first(loc), "-", last(loc), "); skipping.")
         return nothing
@@ -1525,7 +1541,7 @@ function cluster_region(chrom, peakloc, bams; dw=600, features=(:fire, :mod_6mA)
     ### result tables
     PeakName = String(peakname)
     Category = String(category)
-    rt  = readtable(chrom, loc, reads, optimal_clustering, CM; unifystrand=unify_gc_strand, peakname=PeakName, category=Category)
+    rt  = readtable(chrom, loc, reads, optimal_clustering, CM; unifystrand=unify_gc_strand, peakname=PeakName, category=Category, samples=sample_labels)
     
     ct  = clustertable(rt, chrom, loc, reads, optimal_clustering, CM; peakname=PeakName, category=Category)
     mct = modclustertable_5mC(chrom, loc, reads, optimal_clustering; unifystrand=unify_gc_strand) 

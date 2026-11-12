@@ -292,6 +292,9 @@ function parse_commandline()
         "--label"
             help = "Label for output files"
             default = ""
+        "--samples", "-s"
+            help = "Optional comma-separated sample labels for each BAM/CRAM file (e.g. 'endo_as1,endo_as2,endo_wgs' or '050526=endo_as1,200126=endo_as2'); defaults to automatic Dorado/ONT directory sample detection"
+            default = nothing
         "files"
             nargs = '+'
             help = "BAM/CRAM files"
@@ -311,6 +314,12 @@ function parse_commandline()
         "--peaks", "-p"
             help = "Optional target peaks BED/TSV file to supply PeakName and Category labels"
             default = nothing
+        "--samples", "-s"
+            help = "Optional comma-separated sample label overrides (e.g. '050526=endo_as1,200126=endo_as2,181225=endo_wgs' or 'endo_as1,endo_as2,endo_wgs')"
+            default = nothing
+        "--refresh_samples"
+            help = "Only regenerate sample.svg and report.html for existing region reports (fast ~10x update after sample label changes)"
+            action = :store_true
         "--longest_only"
             help = "Plot only the longest transcript model per gene"
             arg_type = Bool
@@ -452,7 +461,8 @@ function julia_main()::Cint
             maxiter=opts["maxiter"],
             linkage=linkage_sym,
             logiter=opts["logiter"],
-            label=opts["label"]
+            label=opts["label"],
+            samples=opts["samples"]
         )
     elseif cmd == "report"
         opts = parsed_args["report"]
@@ -460,6 +470,8 @@ function julia_main()::Cint
         out_path = opts["output"]
         exondata_path = opts["exondata"]
         peak_path = opts["peaks"]
+        samples_opt = opts["samples"]
+        refresh_samples = opts["refresh_samples"]
         longest_only = opts["longest_only"]
         generate_reports = !opts["no_reports"]
         build_index = !opts["no_index"]
@@ -480,6 +492,8 @@ function julia_main()::Cint
                 generate_reports=generate_reports,
                 build_index=build_index,
                 skip_existing=skip_existing,
+                samples=samples_opt,
+                refresh_samples=refresh_samples,
                 workers=workers,
                 chunk=chunk,
                 nchunks=nchunks,

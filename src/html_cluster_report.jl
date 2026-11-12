@@ -13,83 +13,88 @@ function save_cluster_report_assets(clustering, asset_dir;
     longest_only=true, 
     gene_flank=15_000, 
     phase_threshold=0.035, 
-    px_per_unit=2
+    px_per_unit=2,
+    only_sample::Bool=false
 )
     mkpath(asset_dir)
     
-    # 1. Summary: Cluster sizes, ΔBIC, Schwarz weights (SVG @ 1600x350)
-    f_sum = plotclustersummary(clustering; figure=(; size=(1600, 350)))
-    summary_path = joinpath(asset_dir, "summary.svg")
-    save(summary_path, f_sum)
-    
-    # 2. Gene Model track (separate figure, spanning ±15kb flanking context with dual loc/peakloc shading)
     has_genes = false
-    if !isnothing(exondata)
-        f_gene = plot_genemodel_track(clustering, exondata; gene_flank=gene_flank, longest_only=longest_only)
-        if !isnothing(f_gene)
-            has_genes = true
-            save(joinpath(asset_dir, "genemodels.png"), f_gene, px_per_unit=px_per_unit)
+    if only_sample && isfile(joinpath(asset_dir, "tracks.png"))
+        has_genes = isfile(joinpath(asset_dir, "genemodels.png"))
+    else
+        # 1. Summary: Cluster sizes, ΔBIC, Schwarz weights (SVG @ 1600x350)
+        f_sum = plotclustersummary(clustering; figure=(; size=(1600, 350)))
+        summary_path = joinpath(asset_dir, "summary.svg")
+        save(summary_path, f_sum)
+        
+        # 2. Gene Model track (separate figure, spanning ±15kb flanking context with dual loc/peakloc shading)
+        if !isnothing(exondata)
+            f_gene = plot_genemodel_track(clustering, exondata; gene_flank=gene_flank, longest_only=longest_only)
+            if !isnothing(f_gene)
+                has_genes = true
+                save(joinpath(asset_dir, "genemodels.png"), f_gene, px_per_unit=px_per_unit)
+            end
         end
-    end
 
-    # 3. Dense Single-Molecule Tracks: Feature Heatmap + FIRE/Nuc + 6mA + 5mC (PNG @ 2x Retina)
-    f_tracks = Figure(size=(1600, 650))
-    plot_cluster_tracks(clustering; f=f_tracks)
-    tracks_path = joinpath(asset_dir, "tracks.png")
-    save(tracks_path, f_tracks, px_per_unit=px_per_unit)
-    
-    # 4. Centroid Profiles: FIRE vs 6mA, Nuc vs 6mA, 5mC vs FIRE (PNG @ 2x)
-    f_prof = Figure(size=(1600, 750))
-    plot_cluster_profiles(clustering; f=f_prof)
-    profiles_path = joinpath(asset_dir, "profiles.png")
-    save(profiles_path, f_prof, px_per_unit=px_per_unit)
-    
-    # 5. NRL: Two separate full-width figures (Row 1: side-by-side FIRE & 6mA read NRL boxplots; Row 2: full-width AC grid)
-    k = clustering.optimal_clustering.optimal_k
-    f_nrl_box = Figure(size=(1500, 320))
-    boxplot_nrl(clustering; f=f_nrl_box, axx=1, axy=1, direction=:vertical, dual=true)
-    save(joinpath(asset_dir, "nrl_boxplot.svg"), f_nrl_box)
+        # 3. Dense Single-Molecule Tracks: Feature Heatmap + FIRE/Nuc + 6mA + 5mC (PNG @ 2x Retina)
+        f_tracks = Figure(size=(1600, 650))
+        plot_cluster_tracks(clustering; f=f_tracks)
+        tracks_path = joinpath(asset_dir, "tracks.png")
+        save(tracks_path, f_tracks, px_per_unit=px_per_unit)
+        
+        # 4. Centroid Profiles: FIRE vs 6mA, Nuc vs 6mA, 5mC vs FIRE (PNG @ 2x)
+        f_prof = Figure(size=(1600, 750))
+        plot_cluster_profiles(clustering; f=f_prof)
+        profiles_path = joinpath(asset_dir, "profiles.png")
+        save(profiles_path, f_prof, px_per_unit=px_per_unit)
+        
+        # 5. NRL: Two separate full-width figures (Row 1: side-by-side FIRE & 6mA read NRL boxplots; Row 2: full-width AC grid)
+        k = clustering.optimal_clustering.optimal_k
+        f_nrl_box = Figure(size=(1500, 320))
+        boxplot_nrl(clustering; f=f_nrl_box, axx=1, axy=1, direction=:vertical, dual=true)
+        save(joinpath(asset_dir, "nrl_boxplot.svg"), f_nrl_box)
 
-    f_nrl_spec = Figure(size=(1500, max(280, 230 * cld(k, 4) + 45)))
-    plot_spectral_nrl(clustering; f=f_nrl_spec, nrl_feature=:fire, phase_threshold=phase_threshold)
-    save(joinpath(asset_dir, "nrl_spectral.svg"), f_nrl_spec)
-    
-    # 6. Uncertainty / Entropy (SVG)
-    f_ent = Figure(size=(1300, 320))
-    ax_ent1 = Axis(f_ent[1, 1], title="Population Uncertainty vs k")
-    plot_mean_assignment_uncertainty(clustering; f=f_ent, ax=ax_ent1)
-    boxplot_read_uncertainty(clustering; f=f_ent, axx=2:3, axy=1, direction=:vertical)
-    entropy_path = joinpath(asset_dir, "entropy.svg")
-    save(entropy_path, f_ent)
-    
-    # 7. 5mC Epigenetics: Volcano + Differential Heatmap + Single-Molecule 5mC at Diff Sites (SVG)
-    f_5mc = Figure(size=(1600, 360))
-    plot_5mC_volcano(clustering; f=f_5mc, axx=1, axy=1, pv_thresh=0.05)
-    plot_5mC_diff_heat(clustering; f=f_5mc, axx=3, axy=1, pv_thresh=0.05)
-    
-    sig_df = filter(r -> r.pvalue < 0.05, clustering.modclustertable)
-    sig_pos = unique(sig_df.pos)
-    levels = read_plot_levels(clustering)
-    ax_mod = Axis(f_5mc[1, 5], title=isempty(sig_pos) ? "Single-Molecule 5mC (No sig sites)" : "Single-Molecule 5mC (Diff Sites in Red)", xgridvisible=false, ygridvisible=false)
-    modplot(clustering.chrom, clustering.loc, clustering.reads, levels; 
-            mod=:mod_5mC, f=f_5mc, ax=ax_mod, markersize=3, plotline=false, color=:grey75)
-    if !isempty(sig_pos)
+        f_nrl_spec = Figure(size=(1500, max(280, 230 * cld(k, 4) + 45)))
+        plot_spectral_nrl(clustering; f=f_nrl_spec, nrl_feature=:fire, phase_threshold=phase_threshold)
+        save(joinpath(asset_dir, "nrl_spectral.svg"), f_nrl_spec)
+        
+        # 6. Uncertainty / Entropy (SVG)
+        f_ent = Figure(size=(1300, 320))
+        ax_ent1 = Axis(f_ent[1, 1], title="Population Uncertainty vs k")
+        plot_mean_assignment_uncertainty(clustering; f=f_ent, ax=ax_ent1)
+        boxplot_read_uncertainty(clustering; f=f_ent, axx=2:3, axy=1, direction=:vertical)
+        entropy_path = joinpath(asset_dir, "entropy.svg")
+        save(entropy_path, f_ent)
+        
+        # 7. 5mC Epigenetics: Volcano + Differential Heatmap + Single-Molecule 5mC at Diff Sites (SVG)
+        f_5mc = Figure(size=(1600, 360))
+        plot_5mC_volcano(clustering; f=f_5mc, axx=1, axy=1, pv_thresh=0.05)
+        plot_5mC_diff_heat(clustering; f=f_5mc, axx=3, axy=1, pv_thresh=0.05)
+        
+        sig_df = filter(r -> r.pvalue < 0.05, clustering.modclustertable)
+        sig_pos = unique(sig_df.pos)
+        levels = read_plot_levels(clustering)
+        ax_mod = Axis(f_5mc[1, 5], title=isempty(sig_pos) ? "Single-Molecule 5mC (No sig sites)" : "Single-Molecule 5mC (Diff Sites in Red)", xgridvisible=false, ygridvisible=false)
         modplot(clustering.chrom, clustering.loc, clustering.reads, levels; 
-                mod=:mod_5mC, f=f_5mc, ax=ax_mod, validpos=(Set(sig_pos), Set{Int}()), markersize=4.5, plotline=false, color=:crimson)
+                mod=:mod_5mC, f=f_5mc, ax=ax_mod, markersize=3, plotline=false, color=:grey75)
+        if !isempty(sig_pos)
+            modplot(clustering.chrom, clustering.loc, clustering.reads, levels; 
+                    mod=:mod_5mC, f=f_5mc, ax=ax_mod, validpos=(Set(sig_pos), Set{Int}()), markersize=4.5, plotline=false, color=:crimson)
+        end
+        clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
+        cpg_path = joinpath(asset_dir, "5mC.svg")
+        save(cpg_path, f_5mc)
+        
+        # 8. Strand Diagnostics (SVG)
+        f_strand = strand_diagnostics(clustering)
+        strand_path = joinpath(asset_dir, "strand.svg")
+        save(strand_path, f_strand)
+        
+        # 9. Haplotype Diagnostics (SVG)
+        f_hap = hap_diagnostics(clustering)
+        hap_path = joinpath(asset_dir, "haplotype.svg")
+        save(hap_path, f_hap)
     end
-    clusterlines!(clustering, ax=ax_mod, plotlines=true, setticks=true, color=:black)
-    cpg_path = joinpath(asset_dir, "5mC.svg")
-    save(cpg_path, f_5mc)
-    
-    # 8. Strand Diagnostics (SVG)
-    f_strand = strand_diagnostics(clustering)
-    strand_path = joinpath(asset_dir, "strand.svg")
-    save(strand_path, f_strand)
-    
-    # 9. Haplotype Diagnostics (SVG)
-    f_hap = hap_diagnostics(clustering)
-    hap_path = joinpath(asset_dir, "haplotype.svg")
-    save(hap_path, f_hap)
     
     # 10. Sample Representation Diagnostics (SVG)
     f_sample = sample_diagnostics(clustering)
@@ -171,9 +176,11 @@ function render_cluster_report(clustering, outdir;
     filename="report.html", 
     catalog_path=nothing,
     guide_path=nothing,
-    update_nrl::Bool=true
+    update_nrl::Bool=true,
+    samples=nothing,
+    only_sample::Bool=false
 )
-    update_nrl && update_clustering_nrl!(clustering; phase_threshold=phase_threshold)
+    update_nrl && update_clustering_nrl!(clustering; phase_threshold=phase_threshold, samples=samples)
     resolved_peakname, resolved_category = _resolve_peak_meta(clustering; peakname=peakname, category=category)
     mkpath(outdir)
     resolved_guide_path = if !isnothing(guide_path)
@@ -189,7 +196,8 @@ function render_cluster_report(clustering, outdir;
         exondata=exondata, 
         longest_only=longest_only, 
         gene_flank=gene_flank,
-        phase_threshold=phase_threshold
+        phase_threshold=phase_threshold,
+        only_sample=only_sample
     )
     
     chrom = clustering.chrom
