@@ -1542,14 +1542,14 @@ version = "3.7.2"
 
 [[deps.SMGReader]]
 deps = ["Printf", "htslib_jll"]
-git-tree-sha1 = "371a4a3b174ee8619348a079396ded64b053db76"
+git-tree-sha1 = "e8aed27325db9dca5efd93aa8e3e4154ad4878ff"
 repo-rev = "main"
 repo-url = "https://github.com/exetergrdd/SMGReader.jl"
 uuid = "1fcad8e2-2524-48d4-84b4-e3c1a79e288e"
 version = "1.0.0-DEV"
 
 [[deps.SMGStats]]
-deps = ["AlgebraOfGraphics", "ArgParse", "CSV", "CairoMakie", "Clustering", "CodecZlib", "ColorSchemes", "DataFrames", "Dates", "Distances", "FreeTypeAbstraction", "GenomicFeatures", "HypothesisTests", "ImageFiltering", "JLD2", "OnlineStats", "ProgressMeter", "Random", "SMGReader", "Statistics", "StatsBase", "SwarmMakie", "UnicodePlots", "YAML"]
+deps = ["AlgebraOfGraphics", "ArgParse", "CSV", "CairoMakie", "Clustering", "CodecZlib", "ColorSchemes", "DataFrames", "Dates", "Distances", "FreeTypeAbstraction", "GenomicFeatures", "HypothesisTests", "ImageFiltering", "JLD2", "Markdown", "OnlineStats", "ProgressMeter", "Random", "SMGReader", "Statistics", "StatsBase", "SwarmMakie", "UnicodePlots", "YAML"]
 path = "."
 uuid = "69244843-d0fa-4a00-9bc2-bde15b166b8b"
 version = "1.0.0-DEV"
